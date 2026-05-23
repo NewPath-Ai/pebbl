@@ -19,7 +19,7 @@ function findMemDir() {
 function requireMemDir() {
   const dir = findMemDir();
   if (!dir) {
-    console.error('No .mem/ directory found. Run `mem init` first.');
+    console.error('No .mem/ directory found. Run `pebbl init` first.');
     process.exit(1);
   }
   return dir;

@@ -7,7 +7,7 @@ const { qmdUpdate } = require('./qmd');
 
 module.exports = function log(message) {
   if (!message || !message.trim()) {
-    console.error('Usage: mem log "[message]"');
+    console.error('Usage: pebbl log "[message]"');
     process.exit(1);
   }
 

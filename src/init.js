@@ -69,5 +69,5 @@ module.exports = function init() {
     console.warn('qmd not found — semantic search disabled until you run: npm install -g qmd');
   }
 
-  console.log('\npebbl ready. Run `mem log "[your first note]"` to start stacking.');
+  console.log('\npebbl ready. Run `pebbl log "[your first note]"` to start stacking.');
 };

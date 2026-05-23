@@ -4,7 +4,7 @@ const { qmdQuery } = require('./qmd');
 
 module.exports = function search(query) {
   if (!query || !query.trim()) {
-    console.error('Usage: mem search "[query]"');
+    console.error('Usage: pebbl search "[query]"');
     process.exit(1);
   }
 
