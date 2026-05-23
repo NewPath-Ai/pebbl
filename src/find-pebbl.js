@@ -2,11 +2,11 @@
 const fs = require('fs');
 const path = require('path');
 
-// Walk up from cwd until we find .mem/, like git finds .git/
-function findMemDir() {
+// Walk up from cwd until we find .pebbl/, like git finds .git/
+function findPebblDir() {
   let dir = process.cwd();
   while (true) {
-    const candidate = path.join(dir, '.mem');
+    const candidate = path.join(dir, '.pebbl');
     if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
       return candidate;
     }
@@ -16,13 +16,13 @@ function findMemDir() {
   }
 }
 
-function requireMemDir() {
-  const dir = findMemDir();
+function requirePebblDir() {
+  const dir = findPebblDir();
   if (!dir) {
-    console.error('No .mem/ directory found. Run `pebbl init` first.');
+    console.error('No .pebbl/ directory found. Run `pebbl init` first.');
     process.exit(1);
   }
   return dir;
 }
 
-module.exports = { findMemDir, requireMemDir };
+module.exports = { findPebblDir, requirePebblDir };

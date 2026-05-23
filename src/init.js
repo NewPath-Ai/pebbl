@@ -1,7 +1,6 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const { openDb } = require('./db');
 const { qmdAvailable, qmdCollectionCreate } = require('./qmd');
 
@@ -14,23 +13,23 @@ pebbl log-commit "$HASH" "$MESSAGE" "$FILES"
 
 module.exports = function init() {
   const cwd = process.cwd();
-  const memDir = path.join(cwd, '.mem');
+  const pebblDir = path.join(cwd, '.pebbl');
 
-  if (fs.existsSync(memDir)) {
-    console.log('.mem/ already exists — skipping directory creation.');
+  if (fs.existsSync(pebblDir)) {
+    console.log('.pebbl/ already exists — skipping directory creation.');
   } else {
-    fs.mkdirSync(memDir, { recursive: true });
-    console.log('Created .mem/');
+    fs.mkdirSync(pebblDir, { recursive: true });
+    console.log('Created .pebbl/');
   }
 
   // Seed empty markdown files
-  const manualLogs = path.join(memDir, 'manual-logs.md');
-  const commitLog  = path.join(memDir, 'commit-log.md');
+  const manualLogs = path.join(pebblDir, 'manual-logs.md');
+  const commitLog  = path.join(pebblDir, 'commit-log.md');
   if (!fs.existsSync(manualLogs)) fs.writeFileSync(manualLogs, '# Manual Logs\n\n');
   if (!fs.existsSync(commitLog))  fs.writeFileSync(commitLog,  '# Commit Log\n\n');
 
   // Initialize SQLite
-  openDb(memDir);
+  openDb(pebblDir);
   console.log('Initialized db.sqlite');
 
   // Git hook
@@ -45,22 +44,22 @@ module.exports = function init() {
 
   // .gitignore
   const gitignore = path.join(cwd, '.gitignore');
-  const entry = '.mem/\n';
+  const entry = '.pebbl/\n';
   if (fs.existsSync(gitignore)) {
     const existing = fs.readFileSync(gitignore, 'utf8');
-    if (!existing.includes('.mem/')) {
+    if (!existing.includes('.pebbl/')) {
       fs.appendFileSync(gitignore, `\n${entry}`);
-      console.log('Added .mem/ to .gitignore');
+      console.log('Added .pebbl/ to .gitignore');
     }
   } else {
     fs.writeFileSync(gitignore, entry);
-    console.log('Created .gitignore with .mem/');
+    console.log('Created .gitignore with .pebbl/');
   }
 
   // QMD index
   if (qmdAvailable()) {
     try {
-      qmdCollectionCreate(memDir);
+      qmdCollectionCreate(pebblDir);
       console.log('QMD collection created');
     } catch {
       console.warn('QMD collection create failed — you may need to run it manually.');

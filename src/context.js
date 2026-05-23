@@ -1,11 +1,11 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { requireMemDir } = require('./find-mem');
+const { requirePebblDir } = require('./find-pebbl');
 
 module.exports = function context() {
-  const memDir = requireMemDir();
-  const logFile = path.join(memDir, 'manual-logs.md');
+  const pebblDir = requirePebblDir();
+  const logFile = path.join(pebblDir, 'manual-logs.md');
 
   if (!fs.existsSync(logFile)) {
     console.log('--- PROJECT MEMORY ---\n(no entries yet)\n---');

@@ -1,5 +1,5 @@
 'use strict';
-const { requireMemDir } = require('./find-mem');
+const { requirePebblDir } = require('./find-pebbl');
 const { qmdQuery } = require('./qmd');
 
 module.exports = function search(query) {
@@ -8,8 +8,8 @@ module.exports = function search(query) {
     process.exit(1);
   }
 
-  const memDir = requireMemDir();
-  const raw = qmdQuery(memDir, query.trim());
+  const pebblDir = requirePebblDir();
+  const raw = qmdQuery(pebblDir, query.trim());
 
   if (!raw.trim()) {
     console.log('No results found.');

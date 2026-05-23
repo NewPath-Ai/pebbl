@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { requireMemDir } = require('./find-mem');
+const { requirePebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
 const { qmdUpdate } = require('./qmd');
 
@@ -11,16 +11,16 @@ module.exports = function log(message) {
     process.exit(1);
   }
 
-  const memDir = requireMemDir();
+  const pebblDir = requirePebblDir();
   const ts = new Date().toISOString();
   const entry = `## ${ts} - ${message.trim()}\n\n`;
 
-  fs.appendFileSync(path.join(memDir, 'manual-logs.md'), entry);
+  fs.appendFileSync(path.join(pebblDir, 'manual-logs.md'), entry);
 
-  const db = openDb(memDir);
+  const db = openDb(pebblDir);
   db.prepare('INSERT INTO logs (timestamp, source, message) VALUES (?, ?, ?)').run(ts, 'manual', message.trim());
 
-  qmdUpdate(memDir);
+  qmdUpdate(pebblDir);
 
   console.log(`[${ts.slice(0, 10)}] ${message.trim()}`);
 };

@@ -18,8 +18,8 @@ CREATE TABLE IF NOT EXISTS commits (
 );
 `;
 
-function openDb(memDir) {
-  const db = new Database(path.join(memDir, 'db.sqlite'));
+function openDb(pebblDir) {
+  const db = new Database(path.join(pebblDir, 'db.sqlite'));
   db.exec(SCHEMA);
   return db;
 }

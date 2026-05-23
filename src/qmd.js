@@ -6,22 +6,21 @@ function qmdAvailable() {
   return result.status === 0;
 }
 
-function qmdCollectionCreate(memDir) {
-  execSync(`qmd collection create "${memDir}"`, { stdio: 'inherit' });
+function qmdCollectionCreate(pebblDir) {
+  execSync(`qmd collection create "${pebblDir}"`, { stdio: 'inherit' });
 }
 
-function qmdUpdate(memDir) {
-  // Non-fatal — if qmd isn't installed, skip silently
+function qmdUpdate(pebblDir) {
   if (!qmdAvailable()) return;
-  spawnSync('qmd', ['update', memDir], { stdio: 'ignore' });
+  spawnSync('qmd', ['update', pebblDir], { stdio: 'ignore' });
 }
 
-function qmdQuery(memDir, query) {
+function qmdQuery(pebblDir, query) {
   if (!qmdAvailable()) {
     console.error('qmd not found. Install it: npm install -g qmd');
     process.exit(1);
   }
-  const result = spawnSync('qmd', ['query', query, '--collection', memDir], {
+  const result = spawnSync('qmd', ['query', query, '--collection', pebblDir], {
     encoding: 'utf8',
   });
   if (result.error) throw result.error;
