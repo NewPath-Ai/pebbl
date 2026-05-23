@@ -7,7 +7,7 @@ function qmdAvailable() {
 }
 
 function qmdCollectionCreate(pebblDir) {
-  execSync(`qmd collection create "${pebblDir}"`, { stdio: 'inherit' });
+  execSync(`qmd collection add "${pebblDir}" --name pebbl`, { stdio: 'inherit' });
 }
 
 function qmdUpdate(pebblDir) {
@@ -17,10 +17,10 @@ function qmdUpdate(pebblDir) {
 
 function qmdQuery(pebblDir, query) {
   if (!qmdAvailable()) {
-    console.error('qmd not found. Install it: npm install -g qmd');
+    console.error('qmd not found. Install it: npm install -g @tobilu/qmd');
     process.exit(1);
   }
-  const result = spawnSync('qmd', ['query', query, '--collection', pebblDir], {
+  const result = spawnSync('qmd', ['search', query, '-c', 'pebbl'], {
     encoding: 'utf8',
   });
   if (result.error) throw result.error;
