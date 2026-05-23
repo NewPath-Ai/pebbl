@@ -93,17 +93,17 @@ module.exports = function init() {
   }
 
   // AGENT.md — create or append, never overwrite
-  const agentMd = path.join(cwd, 'AGENT.md');
+  const agentMd = path.join(cwd, 'AGENTS.md');
   if (!fs.existsSync(agentMd)) {
     fs.writeFileSync(agentMd, AGENT_STANDALONE);
-    console.log('Created AGENT.md with pebbl guidance');
+    console.log('Created AGENTS.md with pebbl guidance');
   } else {
     const existing = fs.readFileSync(agentMd, 'utf8');
     if (!existing.includes('Pebbl — Project Memory Protocol')) {
       fs.appendFileSync(agentMd, AGENT_SECTION);
-      console.log('Appended pebbl guidance to existing AGENT.md');
+      console.log('Appended pebbl guidance to existing AGENTS.md');
     } else {
-      console.log('AGENT.md already contains pebbl guidance — skipping');
+      console.log('AGENTS.md already contains pebbl guidance — skipping');
     }
   }
 

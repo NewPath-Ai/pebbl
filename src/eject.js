@@ -22,13 +22,13 @@ module.exports = function eject() {
   const cwd = process.cwd();
   let removed = false;
 
-  // Remove pebbl section from AGENT.md
+  // Remove pebbl section from AGENTS.md
   if (removeBlock(
-    path.join(cwd, 'AGENT.md'),
+    path.join(cwd, 'AGENTS.md'),
     '\n## Pebbl — Project Memory Protocol',
     '- Things already obvious from the code itself\n'
   )) {
-    console.log('Removed pebbl block from AGENT.md');
+    console.log('Removed pebbl block from AGENTS.md');
     removed = true;
   }
 
