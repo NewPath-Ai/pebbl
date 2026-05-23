@@ -1,0 +1,243 @@
+# pebbl — Local Project Memory
+
+**A CLI tool that lets AI agents (and humans) remember project decisions, conventions, and patterns without re-discovering them.**
+
+Think of it as a searchable, lightweight second brain for your codebase — one that survives across agent sessions and keeps your architectural intent from getting lost.
+
+## What pebbl solves
+
+When an AI agent works on your code, it needs context: *Why did we choose this storage format? Which libraries are required? What patterns do we follow? What constraints exist?* Without it, agents either:
+- Burn tokens re-discovering decisions you already made
+- Contradict earlier choices, creating inconsistency
+- Miss conventions and constraints, leading to rework
+
+Pebbl keeps this context in a **local SQLite database**, queryable by both humans and agents. When the next agent (or you, 6 months from now) picks up the work, that context is there.
+
+## Core concepts
+
+### Entry categories
+
+Every note in pebbl falls into one of 6 categories:
+
+| Category | Examples |
+|----------|----------|
+| **decision** | Chose PostgreSQL over MongoDB; use UUIDs not auto-increment IDs |
+| **structure** | Notes module owns indexing; auth and payments are separate services |
+| **pattern** | All dates in ISO 8601; errors always include a trace ID |
+| **data** | Schema: users table has (id, email, created_at, tags); search returns top 5 matches |
+| **integration** | OAuth provider: Google, sign-in flow uses PKCE, tokens cached in localStorage |
+| **quality** | Search latency target: < 200ms; test coverage: > 80% |
+
+### Entry tiers
+
+Entries have a lifecycle. You decide how long they stay:
+
+| Tier | Purpose | Keeps | Compacts? |
+|------|---------|-------|-----------|
+| **signal** | Architecture decisions, conventions, quality targets | Forever | Never — stays as-is |
+| **detail** | Implementation notes, gotchas, research | Kept until threshold | Yes — rolled up when there are 10+ on the same topic |
+| **fleeting** | Session summaries, temporary notes | 30 days | Auto-deleted |
+
+### Semantic search
+
+Pebbl uses [qmd](https://github.com/tobilu/qmd) for semantic search over your memory. Search by intent, not keywords:
+```bash
+pebbl search "how do we store user data?"  # returns schema entries, storage decisions
+pebbl search "caching strategy"            # returns cache pattern, performance targets
+```
+
+## Quick start
+
+### 1. Initialize pebbl in your project
+
+```bash
+pebbl init
+```
+
+This creates `.pebbl/` with:
+- `db.sqlite` — your project memory (searchable, queryable)
+- `rubric.yml` — rules for auto-classifying entries
+- `config.yml` — pebbl settings
+- `AGENTS.md` — guidance for agents to follow
+
+Commit `.pebbl/` (but not the markdown projections — they're cached).
+
+### 2. Log decisions as you work
+
+```bash
+# During development, capture architectural choices:
+pebbl log "chose SQLite for metadata" --cat decision --topic storage
+
+# Log conventions:
+pebbl log "all dates are ISO 8601 in the schema" --cat pattern --topic conventions
+
+# Link related entries:
+pebbl log "notes depend on search for full-text indexing" --cat structure --topic notes --relates 42
+
+# Mark when a decision changes:
+pebbl log "switched to PostgreSQL for better querying" --cat decision --topic storage --corrects 7
+```
+
+### 3. Give agents context before they start
+
+When handing off work to an agent, give them the relevant context:
+
+```bash
+# Get recent decisions on auth:
+pebbl context --topic auth
+
+# Get all decisions (not implementation details):
+pebbl context --cat decision
+
+# Paste output into your agent prompt — it will have the decisions without re-discovering them.
+```
+
+### 4. Search when you need specific info
+
+```bash
+# Semantic search — find related ideas:
+pebbl search "metadata storage"
+
+# Or filter by category:
+pebbl search "caching" --cat pattern
+```
+
+### 5. Compact when detail entries pile up
+
+As you work, detail entries (implementation notes, gotchas, research) accumulate. When there are 10+ on the same topic, pebbl suggests compaction:
+
+```bash
+# See what's ready to compact:
+pebbl compact --preview
+
+# Compact (rolls up detail into summaries, archives originals):
+pebbl compact --execute
+```
+
+Signal entries (decisions, conventions) never compact — they're permanent.
+
+## Getting started: for humans
+
+Install globally:
+
+```bash
+npm install -g pebbl
+```
+
+Then in any git repo:
+
+```bash
+pebbl init                  # Set up .pebbl/
+pebbl log "your note"       # Start logging
+pebbl context               # Dump recent context for copy/paste
+```
+
+Flag cheat sheet:
+- `--cat <decision|structure|pattern|data|integration|quality>` — what kind of entry
+- `--topic <name>` — one or more topics (comma-separated: `--topic auth,api`)
+- `--tier <signal|detail|fleeting>` — how long to keep it (default: detail)
+- `--source <human|agent|hook>` — who logged it (default: human)
+- `--relates <id>` — link to another entry
+- `--corrects <id>` — mark that this corrects a prior entry
+
+## Getting started: for agents
+
+If you're an AI agent working on a codebase with pebbl initialized:
+
+1. **Before writing code**, read the decisions:
+   ```bash
+   pebbl context --cat decision
+   pebbl search "auth" --cat decision
+   ```
+
+2. **As you work**, log decisions (especially ones that weren't made before):
+   ```bash
+   pebbl log "chose bcrypt for password hashing" --cat decision --topic auth
+   ```
+
+3. **At the end of your session**, summarize what you built:
+   ```bash
+   pebbl log "[session] built password reset flow, chose bcrypt, added email verification" \
+     --cat decision --topic auth --source agent --tier fleeting
+   ```
+
+See `AGENTS.md` in your repo for the full protocol.
+
+## Why pebbl?
+
+### For teams with AI agents
+- Handoffs are cleaner: the next agent reads *why* decisions were made, not just the code
+- Consistency: agents follow patterns they can query, not guess
+- Learning: each agent's session summary becomes context for the next
+
+### For humans maintaining code
+- Future you has context: why this library? why this structure?
+- Searchable decisions: find "why did we choose X?" without grep
+- Compaction keeps memory from bloating: detail entries roll up automatically
+
+### Technical details
+- **Local-first**: no cloud, no sync — `.pebbl/` lives in your git repo
+- **Fast search**: SQLite + semantic indexing via qmd
+- **Conflict-aware**: supports `--relates` and `--corrects` to track related and contradicting decisions
+- **Zero overhead**: pebbl logs are auto-captured from git commits (you only type what matters)
+
+## Common workflows
+
+### "The previous engineer left, what did they decide?"
+```bash
+pebbl context --cat decision    # Read all decisions in order
+pebbl search "deployment"       # Find decisions about how the app ships
+```
+
+### "I'm implementing a feature, what's the pattern?"
+```bash
+pebbl search "caching strategy"     # Find caching decisions
+pebbl search "API error handling"   # Find error patterns
+pebbl context --cat pattern         # See all conventions
+```
+
+### "I'm taking over this project from an agent"
+```bash
+pebbl context                   # Paste this into your prompt
+# Now you have all recent decisions without re-discovering them
+```
+
+### "This entry is out of date"
+```bash
+pebbl log "we now use async/await, not Promises" --cat pattern --topic conventions --corrects 12
+# Entry 12 is superseded by this new one in the UI
+```
+
+## File structure
+
+```
+.pebbl/
+├── db.sqlite          # The source of truth (queries here)
+├── rubric.yml         # Auto-classification rules
+├── config.yml         # Pebbl settings (compaction threshold, etc.)
+├── manual-logs.md     # Markdown projection (cached, for QMD)
+├── commit-log.md      # Auto-captured git commits (cached, for QMD)
+└── archive/           # Compacted entries (for reference)
+```
+
+The SQLite database is the authority. Markdown files are indexed by qmd for semantic search and can be regenerated anytime.
+
+## Configuration
+
+Edit `.pebbl/config.yml` to customize:
+- `detail_threshold: 10` — how many detail entries on one topic before suggesting compaction
+- `fleeting_days: 30` — how long to keep fleeting entries
+- Search backend, compaction behavior, etc.
+
+## Contributing
+
+Pebbl is designed to be extended. The core is:
+- Structured entry model (SQLite schema in `src/db.js`)
+- CLI (`bin/pebbl.js` routes to handlers in `src/`)
+- Tests (`test/` with Node's built-in runner)
+
+No external dependencies beyond `better-sqlite3`. Contributions welcome.
+
+## License
+
+MIT
