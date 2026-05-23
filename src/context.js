@@ -24,7 +24,7 @@ module.exports = function context(args) {
     params.push(...filter.params);
   }
 
-  sql += ' ORDER BY id DESC LIMIT 10';
+  sql += ` ORDER BY CASE tier WHEN 'signal' THEN 0 WHEN 'detail' THEN 1 WHEN 'fleeting' THEN 2 ELSE 3 END, id DESC LIMIT 10`;
   const rows = db.prepare(sql).all(...params);
 
   console.log('--- PROJECT MEMORY ---');
