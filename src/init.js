@@ -92,7 +92,7 @@ module.exports = function init() {
     console.log('Created .gitignore with .pebbl/');
   }
 
-  // AGENT.md — create or append, never overwrite
+  // AGENTS.md — create or append, never overwrite
   const agentMd = path.join(cwd, 'AGENTS.md');
   if (!fs.existsSync(agentMd)) {
     fs.writeFileSync(agentMd, AGENT_STANDALONE);
