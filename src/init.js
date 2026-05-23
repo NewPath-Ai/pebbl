@@ -39,6 +39,15 @@ pebbl log "message"        # after any significant decision or failure
 
 const AGENT_STANDALONE = `# Agent Guidelines\n${AGENT_SECTION}`;
 
+const CLAUDE_SECTION = `
+## Pebbl (project memory)
+
+Proactively run \`pebbl log "[decision]"\` when you infer a meaningful architectural decision, tradeoff, or gotcha during this session. Don't ask, just log it. Run \`pebbl context\` at the start of every session before touching any code.
+<!-- pebbl -->
+`;
+
+const CLAUDE_STANDALONE = `# CLAUDE.md\n${CLAUDE_SECTION}`;
+
 const HOOK_SCRIPT = `#!/bin/sh
 HASH=$(git log -1 --pretty=%H)
 MESSAGE=$(git log -1 --pretty=%B)
@@ -103,6 +112,21 @@ module.exports = function init() {
       console.log('Appended pebbl guidance to existing AGENT.md');
     } else {
       console.log('AGENT.md already contains pebbl guidance — skipping');
+    }
+  }
+
+  // CLAUDE.md — create or append, never overwrite
+  const claudeMd = path.join(cwd, 'CLAUDE.md');
+  if (!fs.existsSync(claudeMd)) {
+    fs.writeFileSync(claudeMd, CLAUDE_STANDALONE);
+    console.log('Created CLAUDE.md with pebbl guidance');
+  } else {
+    const existing = fs.readFileSync(claudeMd, 'utf8');
+    if (!existing.includes('<!-- pebbl -->')) {
+      fs.appendFileSync(claudeMd, CLAUDE_SECTION);
+      console.log('Appended pebbl guidance to existing CLAUDE.md');
+    } else {
+      console.log('CLAUDE.md already contains pebbl guidance — skipping');
     }
   }
 
