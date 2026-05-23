@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 const Database = require('better-sqlite3');
 const { migrate } = require('../src/migrate');
+const { ensureProjectFiles } = require('../src/rubric');
 
 let dirs = [];
 
@@ -110,5 +111,28 @@ describe('migrate', () => {
     assert(names.includes('tier'));
 
     db.close();
+  });
+});
+
+describe('ensureProjectFiles', () => {
+  let dir;
+
+  after(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('creates rubric.yml and config.yml if missing', () => {
+    dir = tmpDir();
+    ensureProjectFiles(dir);
+    assert(fs.existsSync(path.join(dir, 'rubric.yml')));
+    assert(fs.existsSync(path.join(dir, 'config.yml')));
+  });
+
+  it('does not overwrite existing rubric.yml', () => {
+    dir = tmpDir();
+    const custom = 'rules:\n  - pattern: "custom"\n    category: quality\n    tier: signal\n';
+    fs.writeFileSync(path.join(dir, 'rubric.yml'), custom);
+    ensureProjectFiles(dir);
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'rubric.yml'), 'utf8'), custom);
   });
 });

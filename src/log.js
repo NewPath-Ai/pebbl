@@ -5,7 +5,7 @@ const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
 const { qmdUpdate } = require('./qmd');
-const { loadRubric, classifyEntry } = require('./rubric');
+const { loadRubric, classifyEntry, ensureProjectFiles } = require('./rubric');
 
 const VALID_CATEGORIES = [
   'decision', 'structure', 'pattern', 'data', 'integration', 'quality',
@@ -51,6 +51,7 @@ module.exports = function log(args) {
   validate(flags);
 
   const pebblDir = requirePebblDir();
+  ensureProjectFiles(pebblDir);
   const ts = new Date().toISOString();
 
   let category = flags.cat || null;

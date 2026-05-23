@@ -4,7 +4,7 @@ const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
-const { loadConfig } = require('./rubric');
+const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { qmdUpdate } = require('./qmd');
 
 function buildGroups(db, threshold) {
@@ -117,6 +117,7 @@ function parseResolve(raw) {
 module.exports = function compact(args) {
   const { flags } = parseArgs(args);
   const pebblDir = requirePebblDir();
+  ensureProjectFiles(pebblDir);
   const db = openDb(pebblDir);
   const config = loadConfig(pebblDir) || {};
   const threshold = (config.compaction && config.compaction.threshold) || 10;
@@ -134,6 +135,9 @@ module.exports = function compact(args) {
 };
 
 module.exports.buildGroups = buildGroups;
+module.exports.archiveEntries = archiveEntries;
+module.exports.regenerateMarkdown = regenerateMarkdown;
+module.exports.generateRollupMessage = generateRollupMessage;
 
 function previewMode(db, threshold) {
   const { groups, ambiguous, fleeting } = buildGroups(db, threshold);
@@ -175,11 +179,6 @@ function executeMode(db, pebblDir, config, resolveRaw) {
   const resolveMap = parseResolve(resolveRaw);
   const threshold = (config.compaction && config.compaction.threshold) || 10;
   const retentionDays = (config.compaction && config.compaction.fleeting_retention) || 30;
-
-  if (resolveMap.size > 0 && !resolveRaw) {
-    console.error('--resolve requires --execute');
-    process.exit(1);
-  }
 
   // Validate resolve IDs exist
   for (const [id] of resolveMap) {

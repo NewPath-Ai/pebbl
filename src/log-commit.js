@@ -4,6 +4,7 @@ const path = require('path');
 const { findPebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
 const { qmdUpdate } = require('./qmd');
+const { loadRubric, classifyEntry } = require('./rubric');
 
 module.exports = function logCommit(hash, message, files) {
   try {
@@ -15,7 +16,12 @@ module.exports = function logCommit(hash, message, files) {
     const msg = (message || '').trim().split('\n')[0];
     const fileList = (files || '').replace(/,$/, '');
 
-    const md = `## ${ts} - ${shortHash}: ${msg}\n<!-- cat:uncategorized topic: tier:fleeting source:hook -->\n\nFiles: ${fileList || '(none)'}\n\n`;
+    const rules = loadRubric(pebblDir);
+    const classified = classifyEntry(rules, msg);
+    const category = classified ? classified.category : 'uncategorized';
+    const tier = 'fleeting';
+
+    const md = `## ${ts} - ${shortHash}: ${msg}\n<!-- cat:${category} topic: tier:${tier} source:hook -->\n\nFiles: ${fileList || '(none)'}\n\n`;
     fs.appendFileSync(path.join(pebblDir, 'commit-log.md'), md);
 
     const db = openDb(pebblDir);
@@ -26,8 +32,8 @@ module.exports = function logCommit(hash, message, files) {
 
     db.prepare(`
       INSERT INTO logs (timestamp, source, category, tier, message, topics)
-      VALUES (?, 'hook', 'uncategorized', 'fleeting', ?, NULL)
-    `).run(ts, msg);
+      VALUES (?, 'hook', ?, 'fleeting', ?, NULL)
+    `).run(ts, category, msg);
 
     qmdUpdate(pebblDir);
   } catch {

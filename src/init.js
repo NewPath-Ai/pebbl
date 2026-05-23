@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { openDb } = require('./db');
 const { qmdAvailable, qmdCollectionCreate } = require('./qmd');
+const { DEFAULT_RUBRIC, DEFAULT_CONFIG } = require('./rubric');
 
 const AGENT_SECTION = `
 ## Pebbl — Project Memory Protocol
@@ -17,7 +18,10 @@ pebbl context --topic <area>     # entries for a specific component
 pebbl search "topic" --cat decision  # search decisions before proposing an approach
 \`\`\`
 
-### Logging (use --cat always)
+### Logging — ALWAYS use --cat and --topic
+
+Every \`pebbl log\` call **must** include \`--cat\` and \`--topic\`. Entries without
+these flags are hard to find and impossible to filter.
 
 | Category    | When to use |
 |-------------|-------------|
@@ -29,19 +33,22 @@ pebbl search "topic" --cat decision  # search decisions before proposing an appr
 | quality     | Perf targets, SLAs, security posture |
 
 \`\`\`bash
-pebbl log "message" --cat decision --topic auth
-pebbl log "message" --cat structure --topic clipforge,hammy
-pebbl log "message" --cat decision --tier signal  # force permanent tier
+pebbl log "chose Redis for caching" --cat decision --topic auth
+pebbl log "modules split into store and renderer" --cat structure --topic notes,renderer
+pebbl log "all dates use ISO 8601" --cat pattern --topic conventions
 \`\`\`
 
-### End of every session
+### End of every session — required format
+
+Log a session summary using exactly this format (the \`[session]\` prefix is required
+for compaction to identify session entries):
 \`\`\`bash
-pebbl log "[session] one-line summary of what changed" --source agent --tier fleeting
+pebbl log "[session] built add/list/search commands, chose markdown storage" --cat decision --topic <main-area-worked-on> --source agent --tier fleeting
 \`\`\`
 
 ### Correcting a past entry
 \`\`\`bash
-pebbl log "new decision" --cat decision --corrects <id>
+pebbl log "switched from Redis to Postgres" --cat decision --topic auth --corrects <id>
 \`\`\`
 
 ### Compaction (when notified)
@@ -51,10 +58,10 @@ pebbl compact --execute --resolve 12:signal,15:rollup,18:skip
 \`\`\`
 
 ### What to log
-- Architecture decisions and why
-- Component boundaries and ownership
-- Conventions and patterns adopted
-- Constraints and failed approaches
+- Architecture decisions and why (--cat decision)
+- Component boundaries and ownership (--cat structure)
+- Conventions and patterns adopted (--cat pattern)
+- Constraints and failed approaches (--cat decision)
 
 ### What not to log
 - Routine code changes (git hook captures those)
@@ -91,49 +98,14 @@ module.exports = function init() {
   // Rubric
   const rubricPath = path.join(pebblDir, 'rubric.yml');
   if (!fs.existsSync(rubricPath)) {
-    fs.writeFileSync(rubricPath, `# Pebbl classification rubric — edit to tune auto-tagging
-# Rules are evaluated top-to-bottom; first match wins.
-# Pattern is matched case-insensitively against the entry message.
-
-rules:
-  - pattern: "\\[session\\]"
-    category: uncategorized
-    tier: fleeting
-
-  - pattern: "chose|decided|decision|picked|went with|trade-?off|constraint"
-    category: decision
-    tier: signal
-
-  - pattern: "module|component|boundary|owns|ownership|depends on|architecture"
-    category: structure
-    tier: signal
-
-  - pattern: "convention|pattern|standard|always|never|rule:|style"
-    category: pattern
-    tier: signal
-
-  - pattern: "schema|model|table|column|migration|data flow|storage"
-    category: data
-    tier: detail
-
-  - pattern: "api|endpoint|contract|integration|webhook|external"
-    category: integration
-    tier: detail
-
-  - pattern: "perf|latency|SLA|security|posture|target|benchmark"
-    category: quality
-    tier: detail
-`);
+    fs.writeFileSync(rubricPath, DEFAULT_RUBRIC);
     console.log('Created rubric.yml');
   }
 
   // Config
   const configPath = path.join(pebblDir, 'config.yml');
   if (!fs.existsSync(configPath)) {
-    fs.writeFileSync(configPath, `compaction:
-  threshold: 10
-  fleeting_retention: 30
-`);
+    fs.writeFileSync(configPath, DEFAULT_CONFIG);
     console.log('Created config.yml');
   }
 

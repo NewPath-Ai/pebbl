@@ -38,3 +38,12 @@ function openDb(pebblDir) {
 }
 
 module.exports = { openDb };
+
+function topicFilter(topic) {
+  return {
+    clause: "AND (',' || topics || ',' LIKE ? OR topics = ? OR topics LIKE ? || ',' OR topics LIKE ',' || ?)",
+    params: [`%,${topic},%`, topic, topic, topic],
+  };
+}
+
+module.exports.topicFilter = topicFilter;

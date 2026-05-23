@@ -1,9 +1,10 @@
 'use strict';
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openDb } = require('./db');
+const { openDb, topicFilter } = require('./db');
 const { qmdAvailable, qmdQuery } = require('./qmd');
 const { displayEntry } = require('./log');
+const { ensureProjectFiles } = require('./rubric');
 
 function parseQmdResults(raw, cat, topic) {
   const blocks = raw.split('\nqmd://');
@@ -51,9 +52,9 @@ function searchSqlite(pebblDir, query, cat, topic) {
     params.push(cat);
   }
   if (topic) {
-    sql += " AND (',' || topics || ',' LIKE ? OR topics = ? OR topics LIKE ? || ',' OR topics LIKE ',' || ?)";
-    const pat = `%,${topic},%`;
-    params.push(pat, topic, topic, topic);
+    const filter = topicFilter(topic);
+    sql += ' ' + filter.clause;
+    params.push(...filter.params);
   }
 
   sql += ' ORDER BY timestamp DESC LIMIT 20';
@@ -82,6 +83,7 @@ module.exports = function search(args) {
   }
 
   const pebblDir = requirePebblDir();
+  ensureProjectFiles(pebblDir);
 
   if (qmdAvailable()) {
     const raw = qmdQuery(pebblDir, query);

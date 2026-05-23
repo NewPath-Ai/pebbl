@@ -98,3 +98,58 @@ function classifyEntry(rules, message) {
 }
 
 module.exports = { loadRubric, loadConfig, classifyEntry, parseYaml };
+
+const DEFAULT_RUBRIC = `# Pebbl classification rubric — edit to tune auto-tagging
+# Rules are evaluated top-to-bottom; first match wins.
+# Pattern is matched case-insensitively against the entry message.
+
+rules:
+  - pattern: "\\[session\\]"
+    category: uncategorized
+    tier: fleeting
+
+  - pattern: "chose|decided|decision|picked|went with|trade-?off|constraint"
+    category: decision
+    tier: signal
+
+  - pattern: "module|component|boundary|owns|ownership|depends on|architecture"
+    category: structure
+    tier: signal
+
+  - pattern: "convention|pattern|standard|always|never|rule:|style"
+    category: pattern
+    tier: signal
+
+  - pattern: "schema|model|table|column|migration|data flow|storage"
+    category: data
+    tier: detail
+
+  - pattern: "api|endpoint|contract|integration|webhook|external"
+    category: integration
+    tier: detail
+
+  - pattern: "perf|latency|SLA|security|posture|target|benchmark"
+    category: quality
+    tier: detail
+`;
+
+const DEFAULT_CONFIG = `compaction:
+  threshold: 10
+  fleeting_retention: 30
+`;
+
+function ensureProjectFiles(pebblDir) {
+  const rubricPath = path.join(pebblDir, 'rubric.yml');
+  if (!fs.existsSync(rubricPath)) {
+    fs.writeFileSync(rubricPath, DEFAULT_RUBRIC);
+  }
+
+  const configPath = path.join(pebblDir, 'config.yml');
+  if (!fs.existsSync(configPath)) {
+    fs.writeFileSync(configPath, DEFAULT_CONFIG);
+  }
+}
+
+module.exports.DEFAULT_RUBRIC = DEFAULT_RUBRIC;
+module.exports.DEFAULT_CONFIG = DEFAULT_CONFIG;
+module.exports.ensureProjectFiles = ensureProjectFiles;

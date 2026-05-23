@@ -130,3 +130,74 @@ describe('compact - buildGroups', () => {
     assert.strictEqual(groups.get('data/storage/2026-06').length, 5);
   });
 });
+
+describe('compact - execute helpers', () => {
+  const { buildGroups, archiveEntries, regenerateMarkdown, generateRollupMessage } = require('../src/compact');
+
+  let dir, db;
+
+  after(() => {
+    if (db) db.close();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('generateRollupMessage produces correct rollup text', () => {
+    const entries = [
+      { category: 'decision', topics: 'auth,security', timestamp: '2026-05-01T00:00:00Z', message: 'chose JWT' },
+      { category: 'decision', topics: 'auth,security', timestamp: '2026-05-02T00:00:00Z', message: 'added refresh tokens' },
+    ];
+    const msg = generateRollupMessage(entries);
+    assert(msg.includes('[rollup]'));
+    assert(msg.includes('decision notes on auth'));
+    assert(msg.includes('2026-05'));
+    assert(msg.includes('chose JWT'));
+    assert(msg.includes('added refresh tokens'));
+  });
+
+  it('archiveEntries creates archive file with correct format', () => {
+    dir = tmpDir();
+    fs.mkdirSync(path.join(dir, 'archive'), { recursive: true });
+
+    const entries = [
+      { id: 1, tier: 'detail', category: 'decision', topics: 'auth', message: 'chose JWT' },
+      { id: 2, tier: 'detail', category: 'decision', topics: 'auth', message: 'added refresh' },
+    ];
+    archiveEntries(dir, entries, '2026-05-23T12:00:00Z');
+
+    const archivePath = path.join(dir, 'archive', '2026-05.txt');
+    assert(fs.existsSync(archivePath));
+
+    const content = fs.readFileSync(archivePath, 'utf8');
+    assert(content.includes('=== Archived 2026-05-23T12:00:00Z ==='));
+    assert(content.includes('[id:1] [detail|decision] topics:auth'));
+    assert(content.includes('[id:2] [detail|decision] topics:auth'));
+    assert(content.includes('---'));
+  });
+
+  it('regenerateMarkdown rebuilds manual-logs.md from SQLite', () => {
+    dir = tmpDir();
+    db = new Database(path.join(dir, 'db.sqlite'));
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS logs (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp  TEXT NOT NULL,
+        source     TEXT NOT NULL DEFAULT 'human',
+        category   TEXT NOT NULL DEFAULT 'uncategorized',
+        tier       TEXT NOT NULL DEFAULT 'detail',
+        message    TEXT NOT NULL,
+        topics     TEXT,
+        relates_to INTEGER,
+        corrects   INTEGER
+      );
+    `);
+    db.prepare('INSERT INTO logs (timestamp, source, category, tier, message, topics) VALUES (?, ?, ?, ?, ?, ?)')
+      .run('2026-05-23T12:00:00Z', 'human', 'decision', 'signal', 'chose SQLite', 'datastore');
+
+    regenerateMarkdown(dir);
+
+    const md = fs.readFileSync(path.join(dir, 'manual-logs.md'), 'utf8');
+    assert(md.includes('# Manual Logs'));
+    assert(md.includes('chose SQLite'));
+    assert(md.includes('cat:decision topic:datastore tier:signal'));
+  });
+});

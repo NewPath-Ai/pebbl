@@ -5,7 +5,6 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { loadRubric, classifyEntry, parseYaml } = require('../src/rubric');
-
 describe('parseYaml', () => {
   it('parses rules list', () => {
     const yaml = `rules:
@@ -148,6 +147,26 @@ describe('loadRubric', () => {
     assert(rules[0].pattern.test('I CHOSE Redis'));
     assert(!rules[0].pattern.test('added a table'));
     assert(rules[1].pattern.test('updated the schema'));
+  });
+
+  it('integration: file-loaded rules + classifyEntry pipeline', () => {
+    fs.writeFileSync(path.join(tmpDir, 'rubric.yml'), `rules:
+  - pattern: "chose|decided"
+    category: decision
+    tier: signal
+  - pattern: "api|endpoint"
+    category: integration
+    tier: detail
+`);
+    const rules = loadRubric(tmpDir);
+    const result = classifyEntry(rules, 'chose Postgres over MySQL');
+    assert.deepStrictEqual(result, { category: 'decision', tier: 'signal' });
+
+    const result2 = classifyEntry(rules, 'added a new API endpoint');
+    assert.deepStrictEqual(result2, { category: 'integration', tier: 'detail' });
+
+    const result3 = classifyEntry(rules, 'random note');
+    assert.strictEqual(result3, null);
   });
 
   it('filters out rules without pattern or category', () => {
