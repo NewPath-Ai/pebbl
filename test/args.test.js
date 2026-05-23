@@ -1,0 +1,78 @@
+'use strict';
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
+const { parseArgs } = require('../src/args');
+
+describe('parseArgs', () => {
+  it('parses flags with values', () => {
+    const result = parseArgs(['chose', 'SQLite', '--cat', 'decision', '--topic', 'datastore']);
+    assert.deepStrictEqual(result.flags, { cat: 'decision', topic: 'datastore' });
+    assert.deepStrictEqual(result.positional, ['chose', 'SQLite']);
+  });
+
+  it('parses boolean flags (--preview, --execute)', () => {
+    const result = parseArgs(['--preview']);
+    assert.deepStrictEqual(result.flags, { preview: true });
+    assert.deepStrictEqual(result.positional, []);
+  });
+
+  it('parses --execute as boolean', () => {
+    const result = parseArgs(['--execute', '--resolve', '22:signal', 'extra']);
+    assert.deepStrictEqual(result.flags, { execute: true, resolve: '22:signal' });
+    assert.deepStrictEqual(result.positional, ['extra']);
+  });
+
+  it('handles mixed positional and flags', () => {
+    const result = parseArgs(['hello', '--cat', 'pattern', 'world', '--tier', 'signal']);
+    assert.deepStrictEqual(result.flags, { cat: 'pattern', tier: 'signal' });
+    assert.deepStrictEqual(result.positional, ['hello', 'world']);
+  });
+
+  it('passes unknown flags through as positional', () => {
+    const result = parseArgs(['--unknown', 'value', '--cat', 'decision']);
+    assert.deepStrictEqual(result.flags, { cat: 'decision' });
+    assert.deepStrictEqual(result.positional, ['--unknown', 'value']);
+  });
+
+  it('returns empty for no args', () => {
+    const result = parseArgs([]);
+    assert.deepStrictEqual(result.flags, {});
+    assert.deepStrictEqual(result.positional, []);
+  });
+
+  it('handles all positional with no flags', () => {
+    const result = parseArgs(['just', 'a', 'message']);
+    assert.deepStrictEqual(result.flags, {});
+    assert.deepStrictEqual(result.positional, ['just', 'a', 'message']);
+  });
+
+  it('handles flag with no following value', () => {
+    const result = parseArgs(['--cat', '--topic', 'auth']);
+    assert.deepStrictEqual(result.flags, { topic: 'auth' });
+    assert.deepStrictEqual(result.positional, []);
+  });
+
+  it('handles boolean flag inline with other params', () => {
+    const result = parseArgs(['--preview', '--cat', 'decision']);
+    assert.deepStrictEqual(result.flags, { preview: true, cat: 'decision' });
+    assert.deepStrictEqual(result.positional, []);
+  });
+
+  it('parses relates and corrects as value flags', () => {
+    const result = parseArgs(['fixed', '--relates', '5', '--corrects', '3']);
+    assert.deepStrictEqual(result.flags, { relates: '5', corrects: '3' });
+    assert.deepStrictEqual(result.positional, ['fixed']);
+  });
+
+  it('parses source and tier flags', () => {
+    const result = parseArgs(['note', '--source', 'agent', '--tier', 'fleeting']);
+    assert.deepStrictEqual(result.flags, { source: 'agent', tier: 'fleeting' });
+    assert.deepStrictEqual(result.positional, ['note']);
+  });
+
+  it('parses resolve flag with value', () => {
+    const result = parseArgs(['--resolve', '22:signal,15:rollup']);
+    assert.deepStrictEqual(result.flags, { resolve: '22:signal,15:rollup' });
+    assert.deepStrictEqual(result.positional, []);
+  });
+});

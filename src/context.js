@@ -1,34 +1,62 @@
 'use strict';
-const fs = require('fs');
-const path = require('path');
+const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
+const { openDb } = require('./db');
+const { loadConfig } = require('./rubric');
+const { displayEntry } = require('./log');
 
-module.exports = function context() {
+module.exports = function context(args) {
+  const { flags } = parseArgs(args);
   const pebblDir = requirePebblDir();
-  const logFile = path.join(pebblDir, 'manual-logs.md');
+  const db = openDb(pebblDir);
 
-  if (!fs.existsSync(logFile)) {
-    console.log('--- PROJECT MEMORY ---\n(no entries yet)\n---');
-    return;
+  let sql = 'SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE 1=1';
+  const params = [];
+
+  if (flags.cat) {
+    sql += ' AND category = ?';
+    params.push(flags.cat);
+  }
+  if (flags.topic) {
+    sql += " AND (',' || topics || ',' LIKE ? OR topics = ? OR topics LIKE ? || ',' OR topics LIKE ',' || ?)";
+    const p = `%,${flags.topic},%`;
+    params.push(p, flags.topic, flags.topic, flags.topic);
   }
 
-  const lines = fs.readFileSync(logFile, 'utf8').split('\n');
-  const entries = [];
+  sql += ' ORDER BY id DESC LIMIT 10';
+  const rows = db.prepare(sql).all(...params);
 
-  for (const line of lines) {
-    const match = line.match(/^## (\S+) - (.+)$/);
-    if (match) {
-      const date = match[1].slice(0, 10);
-      entries.push(`[${date}] ${match[2]}`);
-    }
-  }
-
-  const last5 = entries.slice(-5);
   console.log('--- PROJECT MEMORY ---');
-  if (last5.length === 0) {
+  if (rows.length === 0) {
     console.log('(no entries yet)');
   } else {
-    last5.forEach(e => console.log(e));
+    for (const row of rows) {
+      console.log(displayEntry(row));
+    }
   }
   console.log('---');
+
+  const config = loadConfig(pebblDir) || {};
+  const threshold = (config.compaction && config.compaction.threshold) || 10;
+
+  const compactable = db.prepare(`
+    SELECT topics, COUNT(*) as cnt FROM logs
+    WHERE tier IN ('detail','fleeting')
+      AND topics IS NOT NULL AND topics != ''
+    GROUP BY topics HAVING cnt >= ?
+  `).all(threshold);
+
+  for (const row of compactable) {
+    const topicList = (row.topics || '').split(',').map(t => t.trim());
+    for (const t of topicList) {
+      const topicCount = db.prepare(`
+        SELECT COUNT(*) as cnt FROM logs
+        WHERE tier IN ('detail','fleeting')
+          AND (',' || topics || ',' LIKE ? OR topics = ? OR topics LIKE ? || ',' OR topics LIKE ',' || ?)
+      `).get(`%,${t},%`, t, t, t);
+      if (topicCount && topicCount.cnt >= threshold) {
+        console.log(`[pebbl] ${topicCount.cnt} entries on '${t}' ready for compaction. Run: pebbl compact --preview`);
+      }
+    }
+  }
 };

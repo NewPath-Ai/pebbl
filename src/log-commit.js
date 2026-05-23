@@ -15,11 +15,19 @@ module.exports = function logCommit(hash, message, files) {
     const msg = (message || '').trim().split('\n')[0];
     const fileList = (files || '').replace(/,$/, '');
 
-    const entry = `## ${ts} - ${shortHash}: ${msg}\n\nFiles: ${fileList || '(none)'}\n\n`;
-    fs.appendFileSync(path.join(pebblDir, 'commit-log.md'), entry);
+    const md = `## ${ts} - ${shortHash}: ${msg}\n<!-- cat:uncategorized topic: tier:fleeting source:hook -->\n\nFiles: ${fileList || '(none)'}\n\n`;
+    fs.appendFileSync(path.join(pebblDir, 'commit-log.md'), md);
 
     const db = openDb(pebblDir);
-    db.prepare('INSERT INTO commits (timestamp, hash, message, files) VALUES (?, ?, ?, ?)').run(ts, hash, msg, fileList);
+    db.prepare(`
+      INSERT INTO commits (timestamp, hash, message, files)
+      VALUES (?, ?, ?, ?)
+    `).run(ts, hash, msg, fileList);
+
+    db.prepare(`
+      INSERT INTO logs (timestamp, source, category, tier, message, topics)
+      VALUES (?, 'hook', 'uncategorized', 'fleeting', ?, NULL)
+    `).run(ts, msg);
 
     qmdUpdate(pebblDir);
   } catch {

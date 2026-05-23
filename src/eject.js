@@ -26,7 +26,7 @@ module.exports = function eject() {
   if (removeBlock(
     path.join(cwd, 'AGENTS.md'),
     '\n## Pebbl — Project Memory Protocol',
-    '- Things already obvious from the code itself\n'
+    '- Anything obvious from reading the code\n'
   )) {
     console.log('Removed pebbl block from AGENTS.md');
     removed = true;
