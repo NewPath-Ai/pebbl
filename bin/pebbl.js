@@ -15,11 +15,11 @@ if (!command || !(command in commands)) {
   console.log(`pebbl — local project memory
 
 Usage:
-  mem init                  Set up .mem/ in current project
-  mem log "[message]"       Record a decision or note
-  mem search "[query]"      Semantic + keyword search over memory
-  mem context               Last 5 entries for pasting into agent prompts
-  mem log-commit            (called by git post-commit hook)
+  pebbl init                  Set up .mem/ in current project
+  pebbl log "[message]"       Record a decision or note
+  pebbl search "[query]"      Semantic + keyword search over memory
+  pebbl context               Last 5 entries for pasting into agent prompts
+  pebbl log-commit            (called by git post-commit hook)
 `);
   process.exit(command ? 1 : 0);
 }

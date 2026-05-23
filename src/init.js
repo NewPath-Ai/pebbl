@@ -9,7 +9,7 @@ const HOOK_SCRIPT = `#!/bin/sh
 HASH=$(git log -1 --pretty=%H)
 MESSAGE=$(git log -1 --pretty=%B)
 FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | tr '\\n' ',')
-mem log-commit "$HASH" "$MESSAGE" "$FILES"
+pebbl log-commit "$HASH" "$MESSAGE" "$FILES"
 `;
 
 module.exports = function init() {

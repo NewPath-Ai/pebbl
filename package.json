@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Local project memory CLI — stacking pebbles over time",
   "bin": {
-    "mem": "./bin/mem.js"
+    "pebbl": "./bin/pebbl.js"
   },
   "dependencies": {
     "better-sqlite3": "^9.6.0"
