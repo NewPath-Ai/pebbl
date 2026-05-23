@@ -22,16 +22,6 @@ module.exports = function eject() {
   const cwd = process.cwd();
   let removed = false;
 
-  // Remove pebbl section from CLAUDE.md
-  if (removeBlock(
-    path.join(cwd, 'CLAUDE.md'),
-    '\n## Pebbl (project memory)',
-    '<!-- pebbl -->'
-  )) {
-    console.log('Removed pebbl block from CLAUDE.md');
-    removed = true;
-  }
-
   // Remove pebbl section from AGENT.md
   if (removeBlock(
     path.join(cwd, 'AGENT.md'),
