@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const Database = require('better-sqlite3');
-const { migrate } = require('../src/migrate');
+const { migrate, getVersion } = require('../src/migrate');
 const { ensureProjectFiles } = require('../src/rubric');
 
 let dirs = [];
@@ -56,8 +56,14 @@ describe('migrate', () => {
         relates_to INTEGER,
         corrects   INTEGER
       );
+      CREATE TABLE IF NOT EXISTS meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '0.2');
     `);
     migrate(db);
+    assert.strictEqual(getVersion(db), 0.2);
     const cols = db.prepare("PRAGMA table_info(logs)").all();
     const names = cols.map(c => c.name);
     assert(names.includes('category'));
@@ -66,11 +72,13 @@ describe('migrate', () => {
     db.close();
   });
 
-  it('adds missing columns and normalizes source on old db', () => {
+  it('adds missing columns and normalizes source on old v0.1 db', () => {
     const dir = tmpDir();
     const dbPath = oldDb(dir);
     const db = new Database(dbPath);
     migrate(db);
+
+    assert.strictEqual(getVersion(db), 0.2);
 
     const cols = db.prepare("PRAGMA table_info(logs)").all();
     const names = cols.map(c => c.name);
@@ -100,10 +108,13 @@ describe('migrate', () => {
     const db = new Database(dbPath);
 
     migrate(db);
+    assert.strictEqual(getVersion(db), 0.2);
 
     assert.doesNotThrow(() => {
       migrate(db);
     });
+
+    assert.strictEqual(getVersion(db), 0.2);
 
     const cols = db.prepare("PRAGMA table_info(logs)").all();
     const names = cols.map(c => c.name);

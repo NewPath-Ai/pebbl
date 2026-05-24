@@ -9,6 +9,7 @@ const commands = {
   search:       () => require('../src/search')(args),
   context:      () => require('../src/context')(args),
   compact:      () => require('../src/compact')(args),
+  upgrade:      () => require('../src/upgrade')(),
   eject:        () => require('../src/eject')(),
   'log-commit': () => require('../src/log-commit')(args[0], args[1], args[2]),
 };
@@ -25,16 +26,22 @@ Usage:
     --source <source>         human|agent|hook (default: human)
     --relates <id>            Related entry ID
     --corrects <id>           Entry this corrects
+
+    Examples:
+      pebbl log "threshold is 0.5 because Professional Services touches everything at 0.2"
+      pebbl log "threshold is 0.5, weight is 0.6"   ← missing why, will warn
+
   pebbl search "[query]"      Semantic + keyword search over memory
     --cat <category>          Filter by category
     --topic <topic>           Filter by topic
-  pebbl context               Recent entries for pasting into agent prompts
+  pebbl context               Recent entries with rationale warnings & git context
     --cat <category>          Filter by category
     --topic <topic>           Filter by topic
   pebbl compact               Compact entries on a topic
     --preview                 Show groups ready for compaction
     --execute                 Execute compaction
     --resolve <id:action,...> Resolve ambiguous entries
+  pebbl upgrade               Update .pebbl/ to the latest version
   pebbl eject                 Remove pebbl config from this project
   pebbl log-commit            (called by git post-commit hook)
 `);

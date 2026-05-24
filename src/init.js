@@ -63,6 +63,32 @@ pebbl compact --execute --resolve 12:signal,15:rollup,18:skip
 - Conventions and patterns adopted (--cat pattern)
 - Constraints and failed approaches (--cat decision)
 
+### Entry quality — always explain WHY
+
+The most important part of a decision entry is the rationale. Future agents need to
+understand WHY a choice was made, not just WHAT was chosen. Without rationale, agents
+may revert decisions or reintroduce already-solved problems.
+
+Bad (mechanics only):
+\`\`\`bash
+pebbl log "threshold is 0.5, weight is 0.6, W*fit + (1-W)*scorecard formula"
+\`\`\`
+This reads like a spec sheet. A future agent sees "0.5" and has no idea if it's
+arbitrary, empirical, or structural. It will guess or change it.
+
+Good (rationale included):
+\`\`\`bash
+pebbl log "threshold is 0.5 because Professional Services touches every industry at
+0.2-0.4, which is too weak for meaningful knowledge transfer"
+\`\`\`
+The WHY is included. The future agent knows what problem this solves.
+
+Rule of thumb: if your entry reads like config documentation, you forgot the rationale.
+Use "because", "to prevent", "so that", or "the problem is" to connect mechanics to
+motivation. Entries that only list parameters (default, threshold, weight, score, blend,
+config, param, formula) with numbers get auto-tagged as detail tier — they will
+persist but are flagged as lower-authority than signal entries with proper rationale.
+
 ### What not to log
 - Routine code changes (git hook captures those)
 - Anything obvious from reading the code
@@ -78,7 +104,7 @@ FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | tr '\\n' ',')
 pebbl log-commit "$HASH" "$MESSAGE" "$FILES"
 `;
 
-module.exports = function init() {
+function init() {
   const cwd = process.cwd();
   const pebblDir = path.join(cwd, '.pebbl');
 
@@ -165,4 +191,7 @@ module.exports = function init() {
   }
 
   console.log('\npebbl ready. Run `pebbl log "[your first note]"` to start stacking.');
-};
+}
+
+module.exports = init;
+module.exports.AGENT_SECTION = AGENT_SECTION;

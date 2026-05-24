@@ -28,3 +28,93 @@ pebbl log "message"        # after any significant decision or failure
 
 - Every small code change — the git hook handles that automatically
 - Things already obvious from the code itself
+
+
+
+
+## Pebbl — Project Memory Protocol
+
+Pebbl stores architecture decisions, conventions, and component facts for this codebase.
+Agents use it to avoid burning tokens re-discovering what's already known.
+
+### Start of every session
+```bash
+pebbl context                    # recent entries, all tiers
+pebbl context --topic <area>     # entries for a specific component
+pebbl search "topic" --cat decision  # search decisions before proposing an approach
+```
+
+### Logging — ALWAYS use --cat and --topic
+
+Every `pebbl log` call **must** include `--cat` and `--topic`. Entries without
+these flags are hard to find and impossible to filter.
+
+| Category    | When to use |
+|-------------|-------------|
+| decision    | Choices made, rationale, constraints, trade-offs |
+| structure   | Component boundaries, module topology, ownership |
+| pattern     | Conventions, coding standards, design patterns |
+| data        | Models, schemas, storage choices, data flow |
+| integration | APIs, contracts, cross-component interfaces |
+| quality     | Perf targets, SLAs, security posture |
+
+```bash
+pebbl log "chose Redis for caching" --cat decision --topic auth
+pebbl log "modules split into store and renderer" --cat structure --topic notes,renderer
+pebbl log "all dates use ISO 8601" --cat pattern --topic conventions
+```
+
+### End of every session — required format
+
+Log a session summary using exactly this format (the `[session]` prefix is required
+for compaction to identify session entries):
+```bash
+pebbl log "[session] built add/list/search commands, chose markdown storage" --cat decision --topic <main-area-worked-on> --source agent --tier fleeting
+```
+
+### Correcting a past entry
+```bash
+pebbl log "switched from Redis to Postgres" --cat decision --topic auth --corrects <id>
+```
+
+### Compaction (when notified)
+```bash
+pebbl compact --preview
+pebbl compact --execute --resolve 12:signal,15:rollup,18:skip
+```
+
+### What to log
+- Architecture decisions and why (--cat decision)
+- Component boundaries and ownership (--cat structure)
+- Conventions and patterns adopted (--cat pattern)
+- Constraints and failed approaches (--cat decision)
+
+### Entry quality — always explain WHY
+
+The most important part of a decision entry is the rationale. Future agents need to
+understand WHY a choice was made, not just WHAT was chosen. Without rationale, agents
+may revert decisions or reintroduce already-solved problems.
+
+Bad (mechanics only):
+```bash
+pebbl log "threshold is 0.5, weight is 0.6, W*fit + (1-W)*scorecard formula"
+```
+This reads like a spec sheet. A future agent sees "0.5" and has no idea if it's
+arbitrary, empirical, or structural. It will guess or change it.
+
+Good (rationale included):
+```bash
+pebbl log "threshold is 0.5 because Professional Services touches every industry at
+0.2-0.4, which is too weak for meaningful knowledge transfer"
+```
+The WHY is included. The future agent knows what problem this solves.
+
+Rule of thumb: if your entry reads like config documentation, you forgot the rationale.
+Use "because", "to prevent", "so that", or "the problem is" to connect mechanics to
+motivation. Entries that only list parameters (default, threshold, weight, score, blend,
+config, param, formula) with numbers get auto-tagged as detail tier — they will
+persist but are flagged as lower-authority than signal entries with proper rationale.
+
+### What not to log
+- Routine code changes (git hook captures those)
+- Anything obvious from reading the code

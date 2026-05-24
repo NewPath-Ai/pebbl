@@ -131,6 +131,10 @@ rules:
   - pattern: "perf|latency|SLA|security|posture|target|benchmark"
     category: quality
     tier: detail
+
+  - pattern: "\\b(default|threshold|weight|score\\b|blend|config|param|formula)\\b.{0,20}\\d+\\.?\\d*"
+    category: decision
+    tier: detail
 `;
 
 const DEFAULT_CONFIG = `compaction:

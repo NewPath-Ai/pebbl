@@ -6,6 +6,7 @@ const { requirePebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
 const { qmdUpdate } = require('./qmd');
 const { loadRubric, classifyEntry, ensureProjectFiles } = require('./rubric');
+const { isThinEntry } = require('./detect-thin');
 
 const VALID_CATEGORIES = [
   'decision', 'structure', 'pattern', 'data', 'integration', 'quality',
@@ -51,6 +52,10 @@ module.exports = function log(args) {
   validate(flags);
 
   const pebblDir = requirePebblDir();
+
+  if (isThinEntry(message)) {
+    console.error('pebbl: this reads like a spec sheet — consider adding "because..." to explain the rationale');
+  }
   ensureProjectFiles(pebblDir);
   const ts = new Date().toISOString();
 
