@@ -102,6 +102,24 @@ module.exports = function log(args) {
     }
   }
 
+  // Auto-detect foundation scope from message language.
+  // If tier is 'component' (from rubric or fallback) and the message
+  // contains system-wide language, promote to foundation.
+  if (tier === 'component' && !flags.scope && !flags.tier) {
+    const FOUNDATION_PATTERNS = /\b(the\s+(system|project|codebase|repo|app|application)\s+(uses?|is|was|will)|all\s+(modules?|services?|components?)|everywhere|project-?wide|system-?wide|monorepo|tech\s*stack)\b/i;
+    if (FOUNDATION_PATTERNS.test(message)) {
+      tier = 'foundation';
+    }
+    // Also: entries with no topic are likely project-wide
+    if (!flags.topic) {
+      // Only promote if category is decision/structure (not pattern —
+      // patterns like "always use X" are often component-level)
+      if (category === 'decision' || category === 'structure') {
+        tier = 'foundation';
+      }
+    }
+  }
+
   // When rubric didn't match and no manual tier, use category-based defaults:
   // decision/structure/pattern are architectural → component tier.
   // Everything else → detail.

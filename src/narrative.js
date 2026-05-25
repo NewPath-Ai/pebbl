@@ -16,11 +16,62 @@ function readNarrative(pebblDir) {
   return content;
 }
 
-function writeNarrative(pebblDir, text) {
+function writeNarrative(pebblDir, text, refs) {
   const p = getNarrativePath(pebblDir);
   const ts = new Date().toISOString();
-  const content = `# Project Narrative\n\n${text.trim()}\n\n<!-- updated: ${ts} -->\n`;
+  const refsLine = refs && refs.length > 0 ? `<!-- refs: ${refs.join(',')} -->\n` : '';
+  const content = `# Project Narrative\n\n${text.trim()}\n\n${refsLine}<!-- updated: ${ts} -->\n`;
   fs.writeFileSync(p, content);
+}
+
+function readRefs(pebblDir) {
+  const p = getNarrativePath(pebblDir);
+  if (!fs.existsSync(p)) return [];
+  const content = fs.readFileSync(p, 'utf8');
+  const match = content.match(/<!-- refs: ([\d,]+) -->/);
+  if (!match) return [];
+  return match[1].split(',').map(Number).filter(n => !isNaN(n));
+}
+
+function readUpdatedTimestamp(pebblDir) {
+  const p = getNarrativePath(pebblDir);
+  if (!fs.existsSync(p)) return null;
+  const content = fs.readFileSync(p, 'utf8');
+  const match = content.match(/<!-- updated: (.+?) -->/);
+  return match ? match[1] : null;
+}
+
+function updateRefs(pebblDir, db) {
+  const currentRefs = readRefs(pebblDir);
+  if (currentRefs.length === 0) return { updated: false, staleCount: 0 };
+
+  // Find corrections to referenced entries
+  let updated = false;
+  const newRefs = currentRefs.map(refId => {
+    const correction = db.prepare(
+      'SELECT id FROM logs WHERE corrects = ? ORDER BY id DESC LIMIT 1'
+    ).get(refId);
+    if (correction) {
+      updated = true;
+      return correction.id;
+    }
+    return refId;
+  });
+
+  if (updated) {
+    // Rewrite narrative with updated refs (preserve text)
+    const narrative = readNarrative(pebblDir);
+    if (narrative) {
+      // Extract just the text (strip the markdown header and comments)
+      const text = narrative
+        .replace(/^# Project Narrative\s*\n*/m, '')
+        .replace(/<!--.*?-->\s*/g, '')
+        .trim();
+      writeNarrative(pebblDir, text, newRefs);
+    }
+  }
+
+  return { updated, staleCount: updated ? 1 : 0 };
 }
 
 function narrative(args) {
@@ -59,11 +110,26 @@ function narrative(args) {
     process.exit(1);
   }
 
-  writeNarrative(pebblDir, text);
-  console.log('Narrative updated.');
+  // Collect foundation entry refs
+  const { openDb } = require('./db');
+  const db = openDb(pebblDir);
+  const foundationEntries = db.prepare(
+    "SELECT id FROM logs WHERE tier = 'foundation' ORDER BY id"
+  ).all();
+  const refs = foundationEntries.map(e => e.id);
+
+  writeNarrative(pebblDir, text, refs);
+  if (refs.length > 0) {
+    console.log(`Narrative updated. Linked to ${refs.length} foundation entries.`);
+  } else {
+    console.log('Narrative updated.');
+  }
 }
 
 module.exports = narrative;
 module.exports.readNarrative = readNarrative;
 module.exports.writeNarrative = writeNarrative;
 module.exports.getNarrativePath = getNarrativePath;
+module.exports.readRefs = readRefs;
+module.exports.readUpdatedTimestamp = readUpdatedTimestamp;
+module.exports.updateRefs = updateRefs;

@@ -7,7 +7,7 @@ const { openDb } = require('./db');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { qmdUpdate } = require('./qmd');
 
-function buildGroups(db, threshold) {
+function buildGroups(db, threshold, componentThreshold) {
   const rows = db.prepare(`
     SELECT * FROM logs
     WHERE tier IN ('component', 'detail', 'fleeting')
@@ -39,7 +39,11 @@ function buildGroups(db, threshold) {
 
   const qualified = new Map();
   for (const [key, entries] of groups) {
-    if (entries.length >= threshold) {
+    const componentCount = entries.filter(e => e.tier === 'component').length;
+    const isComponentGroup = componentCount > entries.length / 2;
+    const effectiveThreshold = isComponentGroup ? componentThreshold : threshold;
+
+    if (entries.length >= effectiveThreshold) {
       qualified.set(key, entries);
     }
   }
@@ -121,9 +125,10 @@ module.exports = function compact(args) {
   const db = openDb(pebblDir);
   const config = loadConfig(pebblDir) || {};
   const threshold = (config.compaction && config.compaction.threshold) || 10;
+  const componentThreshold = (config.compaction && config.compaction.component_threshold) || 15;
 
   if (flags.preview) {
-    return previewMode(db, threshold);
+    return previewMode(db, threshold, componentThreshold);
   }
 
   if (flags.execute) {
@@ -139,8 +144,8 @@ module.exports.archiveEntries = archiveEntries;
 module.exports.regenerateMarkdown = regenerateMarkdown;
 module.exports.generateRollupMessage = generateRollupMessage;
 
-function previewMode(db, threshold) {
-  const { groups, ambiguous, fleeting } = buildGroups(db, threshold);
+function previewMode(db, threshold, componentThreshold) {
+  const { groups, ambiguous, fleeting } = buildGroups(db, threshold, componentThreshold);
 
   if (groups.size === 0 && ambiguous.length === 0 && fleeting.length === 0) {
     console.log('No entries ready for compaction.');
@@ -148,8 +153,13 @@ function previewMode(db, threshold) {
   }
 
   for (const [key, entries] of groups) {
-    const [cat, topic, month] = key.split('/');
-    console.log(`[${cat} / ${topic} / ${month}] — ${entries.length} entries`);
+    const [, topic, month] = key.split('/');
+    const componentCount = entries.filter(e => e.tier === 'component').length;
+    const isComponentGroup = componentCount > entries.length / 2;
+    const label = isComponentGroup
+      ? `[component / ${topic} / ${month} — ${entries.length} entries] (consolidation)`
+      : `[detail / ${topic} / ${month} — ${entries.length} entries]`;
+    console.log(label);
     for (const e of entries) {
       console.log(`  [id:${e.id}] ${e.message}`);
     }
@@ -178,6 +188,7 @@ function previewMode(db, threshold) {
 function executeMode(db, pebblDir, config, resolveRaw) {
   const resolveMap = parseResolve(resolveRaw);
   const threshold = (config.compaction && config.compaction.threshold) || 10;
+  const componentThreshold = (config.compaction && config.compaction.component_threshold) || 15;
   const retentionDays = (config.compaction && config.compaction.fleeting_retention) || 30;
 
   // Validate resolve IDs exist
@@ -195,7 +206,7 @@ function executeMode(db, pebblDir, config, resolveRaw) {
     }
   }
 
-  const { groups, ambiguous, fleeting } = buildGroups(db, threshold);
+  const { groups, ambiguous, fleeting } = buildGroups(db, threshold, componentThreshold);
   const archiveTs = new Date().toISOString();
 
   // Archive entries to disk first (safe operation)

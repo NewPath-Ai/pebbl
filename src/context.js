@@ -7,6 +7,7 @@ const { openDb, topicFilter } = require('./db');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { displayEntry } = require('./log');
 const { isThinEntry } = require('./detect-thin');
+const { readNarrative, readRefs, readUpdatedTimestamp, updateRefs } = require('./narrative');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -136,6 +137,37 @@ function showCompactionNotifications(db, pebblDir) {
   }
 }
 
+// ── drift detection ──────────────────────────────────────────────────────────
+
+function checkDrift(pebblDir, db) {
+  const refs = readRefs(pebblDir);
+  const updatedTs = readUpdatedTimestamp(pebblDir);
+  if (!updatedTs) return { drift: 0, reasons: [] };
+
+  const reasons = [];
+
+  // Check for new foundation entries since narrative was updated
+  const newFoundation = db.prepare(
+    "SELECT COUNT(*) as cnt FROM logs WHERE tier = 'foundation' AND timestamp > ?"
+  ).get(updatedTs);
+  if (newFoundation && newFoundation.cnt > 0) {
+    reasons.push(`${newFoundation.cnt} new foundation decisions since last update`);
+  }
+
+  // Check for corrections to referenced entries
+  if (refs.length > 0) {
+    const placeholders = refs.map(() => '?').join(',');
+    const corrected = db.prepare(
+      `SELECT COUNT(*) as cnt FROM logs WHERE corrects IN (${placeholders}) AND timestamp > ?`
+    ).get(...refs, updatedTs);
+    if (corrected && corrected.cnt > 0) {
+      reasons.push(`${corrected.cnt} referenced decisions have been corrected`);
+    }
+  }
+
+  return { drift: reasons.length, reasons };
+}
+
 // ── mode: default (new 3-section format) ────────────────────────────────────
 
 function contextDefault(pebblDir, db) {
@@ -145,7 +177,6 @@ function contextDefault(pebblDir, db) {
 
   // ── Section 1: NARRATIVE ──
 
-  const { readNarrative } = require('./narrative');
   const narrative = readNarrative(pebblDir);
   if (narrative) {
     const narrUpdated = getNarrativeUpdated(pebblDir);
@@ -158,6 +189,16 @@ function contextDefault(pebblDir, db) {
     console.log('--- NARRATIVE ---');
     console.log(cleaned);
     if (dateStr) console.log(`(updated: ${dateStr})`);
+
+    // Check for drift
+    const driftResult = checkDrift(pebblDir, db);
+    if (driftResult.drift > 0) {
+      // Auto-update refs if corrections were made
+      updateRefs(pebblDir, db);
+      console.log(`[pebbl] Narrative may be outdated: ${driftResult.reasons.join('; ')}`);
+      console.log('  Run: pebbl narrative --refresh');
+    }
+
     console.log('');
   } else {
     console.log('hint: no project narrative set. Run: pebbl narrative "..."');
