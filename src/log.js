@@ -103,17 +103,21 @@ module.exports = function log(args) {
   }
 
   // Auto-detect foundation scope from message language.
-  // If tier is 'component' (from rubric or fallback) and the message
-  // contains system-wide language, promote to foundation.
-  if (tier === 'component' && !flags.scope && !flags.tier) {
-    const FOUNDATION_PATTERNS = /\b(the\s+(system|project|codebase|repo|app|application)\s+(uses?|is|was|will)|all\s+(modules?|services?|components?)|everywhere|project-?wide|system-?wide|monorepo|tech\s*stack)\b/i;
+  // Fires when tier hasn't been explicitly set by the user.
+  if (!flags.scope && !flags.tier) {
+    const FOUNDATION_PATTERNS = /\b(the\s+(system|project|codebase|repo|app|application)\s+(uses?|is|was|will|requires?)|all\s+(modules?|services?|components?)|everywhere|project-?wide|system-?wide|monorepo|tech\s*stack)\b/i;
     if (FOUNDATION_PATTERNS.test(message)) {
       tier = 'foundation';
+      // System-wide statements like "the project uses X because Y" are
+      // decisions even when the rubric doesn't match a decision verb.
+      // "uses" is too broad for the general rubric, but scoped to
+      // system/project/app language it's a reliable signal.
+      if (!category || category === 'uncategorized') {
+        category = 'decision';
+      }
     }
-    // Also: entries with no topic are likely project-wide
-    if (!flags.topic) {
-      // Only promote if category is decision/structure (not pattern —
-      // patterns like "always use X" are often component-level)
+    // Entries with no topic + decision/structure category are likely project-wide
+    if (!tier && !flags.topic) {
       if (category === 'decision' || category === 'structure') {
         tier = 'foundation';
       }
