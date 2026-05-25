@@ -2,7 +2,12 @@
 
 function getVersion(db) {
   const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
-  return row ? parseFloat(row.value) || 0 : 0;
+  if (!row) return 0;
+  const v = parseFloat(row.value) || 0;
+  // Legacy: old pebbl used integer versions (1, 2). Normalize to semver.
+  // Version 1 = v0.2 era (had categories/tiers but not the v0.3 rename).
+  if (v >= 1 && v < 1.0 + Number.EPSILON) return 0.2;
+  return v;
 }
 
 function setVersion(db, version) {
