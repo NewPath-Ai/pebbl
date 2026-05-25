@@ -85,7 +85,7 @@ module.exports = function log(args) {
     if (!flags.cat && classified) {
       category = classified.category;
     }
-    if (!flags.tier && classified) {
+    if (!flags.tier && !flags.scope && classified) {
       tier = classified.tier;
     }
   }
