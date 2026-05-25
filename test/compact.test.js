@@ -191,13 +191,13 @@ describe('compact - execute helpers', () => {
       );
     `);
     db.prepare('INSERT INTO logs (timestamp, source, category, tier, message, topics) VALUES (?, ?, ?, ?, ?, ?)')
-      .run('2026-05-23T12:00:00Z', 'human', 'decision', 'signal', 'chose SQLite', 'datastore');
+      .run('2026-05-23T12:00:00Z', 'human', 'decision', 'component', 'chose SQLite', 'datastore');
 
     regenerateMarkdown(dir);
 
     const md = fs.readFileSync(path.join(dir, 'manual-logs.md'), 'utf8');
     assert(md.includes('# Manual Logs'));
     assert(md.includes('chose SQLite'));
-    assert(md.includes('cat:decision topic:datastore tier:signal'));
+    assert(md.includes('cat:decision topic:datastore tier:component'));
   });
 });

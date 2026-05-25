@@ -27,6 +27,11 @@ function migrate_v01_to_v02(db) {
   migration();
 }
 
+function migrate_v02_to_v03(db) {
+  // Rename signal → component (safe default: most signal entries are module-level)
+  db.prepare("UPDATE logs SET tier = 'component' WHERE tier = 'signal'").run();
+}
+
 function migrate(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
   let version = getVersion(db);
@@ -35,6 +40,11 @@ function migrate(db) {
     migrate_v01_to_v02(db);
     setVersion(db, 0.2);
     console.error('pebbl: migrated db to v0.2');
+  }
+  if (version < 0.3) {
+    migrate_v02_to_v03(db);
+    setVersion(db, 0.3);
+    console.error('pebbl: migrated db to v0.3 (signal → component tier)');
   }
 }
 

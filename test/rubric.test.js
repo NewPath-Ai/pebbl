@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { loadRubric, classifyEntry, parseYaml } = require('../src/rubric');
+const { loadRubric, classifyEntry, parseYaml, ensureProjectFiles } = require('../src/rubric');
 describe('parseYaml', () => {
   it('parses rules list', () => {
     const yaml = `rules:
@@ -69,24 +69,31 @@ rules:
 });
 
 describe('classifyEntry', () => {
+  // Rules must match real rubric order: [session] first, then content patterns.
+  // This ensures first-match-wins works correctly for session entries.
   const rules = [
-    { pattern: new RegExp('chose|decided|decision|picked', 'i'), category: 'decision', tier: 'signal' },
-    { pattern: new RegExp('module|component|boundary', 'i'), category: 'structure', tier: 'signal' },
     { pattern: new RegExp('\\[session\\]', 'i'), category: 'uncategorized', tier: 'fleeting' },
+    { pattern: new RegExp('chose|decided|decision|picked', 'i'), category: 'decision', tier: 'component' },
+    { pattern: new RegExp('module|component|boundary', 'i'), category: 'structure', tier: 'component' },
   ];
 
   it('matches decision keywords', () => {
     const result = classifyEntry(rules, 'chose SQLite over Postgres');
-    assert.deepStrictEqual(result, { category: 'decision', tier: 'signal' });
+    assert.deepStrictEqual(result, { category: 'decision', tier: 'component' });
   });
 
   it('matches structure keywords', () => {
     const result = classifyEntry(rules, 'refactored the auth module boundary');
-    assert.deepStrictEqual(result, { category: 'structure', tier: 'signal' });
+    assert.deepStrictEqual(result, { category: 'structure', tier: 'component' });
   });
 
   it('matches session tag', () => {
     const result = classifyEntry(rules, '[session] updated the API endpoints');
+    assert.deepStrictEqual(result, { category: 'uncategorized', tier: 'fleeting' });
+  });
+
+  it('session entry with decision keywords still matches session rule first', () => {
+    const result = classifyEntry(rules, '[session] we made a decision to use Redis and chose bcrypt');
     assert.deepStrictEqual(result, { category: 'uncategorized', tier: 'fleeting' });
   });
 
@@ -102,16 +109,16 @@ describe('classifyEntry', () => {
 
   it('uses first matching rule (order matters)', () => {
     const orderedRules = [
-      { pattern: new RegExp('refactor|module', 'i'), category: 'structure', tier: 'signal' },
+      { pattern: new RegExp('refactor|module', 'i'), category: 'structure', tier: 'component' },
       { pattern: new RegExp('refactor.*data', 'i'), category: 'data', tier: 'detail' },
     ];
     const result = classifyEntry(orderedRules, 'refactored the data module');
-    assert.deepStrictEqual(result, { category: 'structure', tier: 'signal' });
+    assert.deepStrictEqual(result, { category: 'structure', tier: 'component' });
   });
 
   it('matches case-insensitively', () => {
     const result = classifyEntry(rules, 'DECIDED to use Redis');
-    assert.deepStrictEqual(result, { category: 'decision', tier: 'signal' });
+    assert.deepStrictEqual(result, { category: 'decision', tier: 'component' });
   });
 });
 
@@ -180,5 +187,56 @@ describe('loadRubric', () => {
     const rules = loadRubric(tmpDir);
     assert.strictEqual(rules.length, 1);
     assert.strictEqual(rules[0].category, 'decision');
+  });
+});
+
+describe('ensureProjectFiles — rubric migration', () => {
+  let tmpDir;
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-migrate-'));
+  });
+
+  after(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('anchors unanchored [session] pattern in existing rubric', () => {
+    fs.writeFileSync(path.join(tmpDir, 'rubric.yml'), `rules:
+  - pattern: "\\[session\\]"
+    category: uncategorized
+    tier: fleeting
+  - pattern: "chose|decided"
+    category: decision
+    tier: signal
+`);
+    ensureProjectFiles(tmpDir);
+    const content = fs.readFileSync(path.join(tmpDir, 'rubric.yml'), 'utf8');
+    assert(content.includes('^\\[session\\]'), 'pattern should be anchored with ^');
+    assert(!content.includes('"\\[session\\]"'), 'old unanchored pattern should be gone');
+  });
+
+  it('does not double-anchor already anchored pattern', () => {
+    fs.writeFileSync(path.join(tmpDir, 'rubric.yml'), `rules:
+  - pattern: "^\\[session\\]"
+    category: uncategorized
+    tier: fleeting
+`);
+    ensureProjectFiles(tmpDir);
+    const content = fs.readFileSync(path.join(tmpDir, 'rubric.yml'), 'utf8');
+    assert(!content.includes('^^'), 'should not double-anchor');
+    assert(content.includes('^\\[session\\]'), 'anchored pattern preserved');
+  });
+
+  it('leaves rubrics without [session] pattern untouched', () => {
+    const original = `rules:
+  - pattern: "chose|decided"
+    category: decision
+    tier: component
+`;
+    fs.writeFileSync(path.join(tmpDir, 'rubric.yml'), original);
+    ensureProjectFiles(tmpDir);
+    const content = fs.readFileSync(path.join(tmpDir, 'rubric.yml'), 'utf8');
+    assert.strictEqual(content, original);
   });
 });

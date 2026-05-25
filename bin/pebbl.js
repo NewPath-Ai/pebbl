@@ -11,6 +11,8 @@ const commands = {
   compact:      () => require('../src/compact')(args),
   upgrade:      () => require('../src/upgrade')(),
   eject:        () => require('../src/eject')(),
+  handoff:      () => require('../src/handoff')(args),
+  narrative:    () => require('../src/narrative')(args),
   'log-commit': () => require('../src/log-commit')(args[0], args[1], args[2]),
 };
 
@@ -22,7 +24,7 @@ Usage:
   pebbl log "[message]"       Record a decision or note
     --cat <category>          decision|structure|pattern|data|integration|quality
     --topic <topic>           Free-form topic (e.g. "auth,api")
-    --tier <tier>             signal|detail|fleeting
+    --tier <tier>             foundation|component|detail|fleeting
     --source <source>         human|agent|hook (default: human)
     --relates <id>            Related entry ID
     --corrects <id>           Entry this corrects
@@ -37,6 +39,19 @@ Usage:
   pebbl context               Recent entries with rationale warnings & git context
     --cat <category>          Filter by category
     --topic <topic>           Filter by topic
+  pebbl handoff "[summary]"   Create a session handoff for the next agent
+    --done <items>            Semicolon-separated completed items
+    --todo <items>            Semicolon-separated remaining items
+    --blocked <items>         Semicolon-separated blockers
+    --topic <topic>           Free-form topic (e.g. "auth,api")
+    --source <source>         human|agent (default: agent)
+    --latest                  Show the most recent handoff
+    --list                    List recent handoffs
+    --close                   Close the open handoff (promotes to foundation-tier log)
+  pebbl narrative             View or set the project narrative
+  pebbl narrative "..."       Set the narrative description
+    --show                    Show the current narrative
+    --generate                Guide on writing a narrative from foundation entries
   pebbl compact               Compact entries on a topic
     --preview                 Show groups ready for compaction
     --execute                 Execute compaction

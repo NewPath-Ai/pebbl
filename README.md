@@ -34,9 +34,10 @@ Entries have a lifecycle. You decide how long they stay:
 
 | Tier | Purpose | Keeps | Compacts? |
 |------|---------|-------|-----------|
-| **signal** | Architecture decisions, conventions, quality targets | Forever | Never — stays as-is |
-| **detail** | Implementation notes, gotchas, research | Kept until threshold | Yes — rolled up when there are 10+ on the same topic |
-| **fleeting** | Session summaries, temporary notes | 30 days | Auto-deleted |
+| **foundation** | Project-wide architecture decisions | Forever — never compacts |
+| **component** | Module-level decisions, conventions | Compacts when 15+ on same topic |
+| **detail** | Implementation notes, gotchas, research | Compacts when 10+ on same topic |
+| **fleeting** | Session summaries, temporary notes | 30 days, auto-deleted |
 
 ### Semantic search
 
@@ -114,7 +115,7 @@ pebbl compact --preview
 pebbl compact --execute
 ```
 
-Signal entries (decisions, conventions) never compact — they're permanent.
+Foundation entries (project-wide decisions) never compact — they're permanent. Component entries compact when 15+ share the same topic.
 
 ## Getting started: for humans
 
@@ -135,10 +136,19 @@ pebbl context               # Dump recent context for copy/paste
 Flag cheat sheet:
 - `--cat <decision|structure|pattern|data|integration|quality>` — what kind of entry
 - `--topic <name>` — one or more topics (comma-separated: `--topic auth,api`)
-- `--tier <signal|detail|fleeting>` — how long to keep it (default: detail)
+- `--tier <foundation|component|detail|fleeting>` — how long to keep it (default: detail)
+- `--scope foundation` — mark as project-level decision (auto-sets tier to foundation)
 - `--source <human|agent|hook>` — who logged it (default: human)
 - `--relates <id>` — link to another entry
 - `--corrects <id>` — mark that this corrects a prior entry
+
+Handoff flags:
+- `--done <items>` — semicolon-separated completed items
+- `--todo <items>` — semicolon-separated remaining items
+- `--blocked <items>` — semicolon-separated blockers
+- `--latest` — show the most recent handoff
+- `--list` — list recent handoffs
+- `--close` — close the open handoff (promotes to foundation-tier log)
 
 ## Getting started: for agents
 
@@ -155,10 +165,17 @@ If you're an AI agent working on a codebase with pebbl initialized:
    pebbl log "chose bcrypt for password hashing" --cat decision --topic auth
    ```
 
-3. **At the end of your session**, summarize what you built:
+3. **At the end of your session**, create a handoff:
    ```bash
-   pebbl log "[session] built password reset flow, chose bcrypt, added email verification" \
-     --cat decision --topic auth --source agent --tier fleeting
+   pebbl handoff "built password reset flow" \
+     --done "bcrypt hashing; email verification; tests" \
+     --todo "rate limiting; forgot-password UI" \
+     --topic auth --source agent
+   ```
+
+4. **At the start of the next session**, the handoff shows automatically in `pebbl context`. Close it when you've picked up the work:
+   ```bash
+   pebbl handoff --close
    ```
 
 See `AGENTS.md` in your repo for the full protocol.
@@ -166,7 +183,7 @@ See `AGENTS.md` in your repo for the full protocol.
 ## Why pebbl?
 
 ### For teams with AI agents
-- Handoffs are cleaner: the next agent reads *why* decisions were made, not just the code
+- Handoffs are structured: `pebbl handoff` captures done/todo/blocked with auto-collected session context
 - Consistency: agents follow patterns they can query, not guess
 - Learning: each agent's session summary becomes context for the next
 
@@ -206,6 +223,21 @@ pebbl context                   # Paste this into your prompt
 ```bash
 pebbl log "we now use async/await, not Promises" --cat pattern --topic conventions --corrects 12
 # Entry 12 is superseded by this new one in the UI
+```
+
+### "I'm handing off to another agent"
+```bash
+pebbl handoff "implemented search, chose lunr.js" \
+  --done "full-text index; query API; tests" \
+  --todo "pagination; fuzzy matching" \
+  --topic search --source agent
+```
+
+### "I'm picking up from a previous agent"
+```bash
+pebbl context                   # shows open handoff at top
+# ... do the work ...
+pebbl handoff --close           # promotes handoff to foundation-tier log entry
 ```
 
 ## File structure

@@ -12,7 +12,7 @@ const VALID_CATEGORIES = [
   'decision', 'structure', 'pattern', 'data', 'integration', 'quality',
 ];
 
-const VALID_TIERS = ['signal', 'detail', 'fleeting'];
+const VALID_TIERS = ['foundation', 'component', 'detail', 'fleeting'];
 
 const VALID_SOURCES = ['human', 'agent', 'hook'];
 
@@ -62,17 +62,54 @@ module.exports = function log(args) {
   let category = flags.cat || null;
   let tier = flags.tier || null;
 
-  if (!flags.cat) {
+  // [session] entries are always uncategorized/fleeting — rubric owns this,
+  // manual --cat cannot override it. This prevents agents from accidentally
+  // tagging session summaries as decisions.
+  const isSession = /^\[session\]/i.test(message);
+  if (isSession) {
+    if (flags.cat && flags.cat !== 'uncategorized') {
+      console.error(`pebbl: [session] entries are auto-classified as uncategorized/fleeting — ignoring --cat ${flags.cat}`);
+    }
+    category = 'uncategorized';
+    tier = 'fleeting';
+    console.error('pebbl: tip — consider `pebbl handoff` for structured session handoffs with --done/--todo/--blocked');
+  } else {
+    // --scope foundation explicitly marks an entry as foundational
+    if (flags.scope === 'foundation') {
+      tier = 'foundation';
+    }
+    // Always consult rubric for classification. Manual --cat overrides
+    // rubric category, but rubric still informs tier when --tier is absent.
     const rules = loadRubric(pebblDir);
     const classified = classifyEntry(rules, message);
-    if (classified) {
+    if (!flags.cat && classified) {
       category = classified.category;
-      if (!flags.tier) tier = classified.tier;
+    }
+    if (!flags.tier && classified) {
+      tier = classified.tier;
     }
   }
 
+  // If --corrects is set, inherit category/tier from the corrected entry
+  // as a fallback when neither manual flags nor rubric provided them.
+  if (flags.corrects) {
+    const origDb = openDb(pebblDir);
+    const origId = parseInt(flags.corrects, 10);
+    const original = origDb.prepare('SELECT category, tier FROM logs WHERE id = ?').get(origId);
+    if (original) {
+      if (!category) category = original.category;
+      if (!tier) tier = original.tier;
+    }
+  }
+
+  // When rubric didn't match and no manual tier, use category-based defaults:
+  // decision/structure/pattern are architectural → component tier.
+  // Everything else → detail.
   if (!category) category = 'uncategorized';
-  if (!tier) tier = 'detail';
+  if (!tier) {
+    const SIGNAL_CATEGORIES = ['decision', 'structure', 'pattern'];
+    tier = SIGNAL_CATEGORIES.includes(category) ? 'component' : 'detail';
+  }
 
   const source = flags.source || 'human';
   const topics = flags.topic || null;

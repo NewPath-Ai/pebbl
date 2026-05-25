@@ -10,7 +10,7 @@ const { qmdUpdate } = require('./qmd');
 function buildGroups(db, threshold) {
   const rows = db.prepare(`
     SELECT * FROM logs
-    WHERE tier IN ('detail','fleeting')
+    WHERE tier IN ('component', 'detail', 'fleeting')
     ORDER BY timestamp
   `).all();
 
@@ -92,7 +92,7 @@ function regenerateMarkdown(pebblDir) {
 function parseResolve(raw) {
   if (!raw) return new Map();
   const map = new Map();
-  const VALID_ACTIONS = ['signal', 'rollup', 'skip'];
+  const VALID_ACTIONS = ['foundation', 'rollup', 'skip'];
 
   for (const item of raw.split(',')) {
     const parts = item.split(':');
@@ -100,7 +100,7 @@ function parseResolve(raw) {
     const action = parts[1];
 
     if (!VALID_ACTIONS.includes(action)) {
-      console.error(`Invalid resolve action "${action}" for ID ${id}. Valid: signal, rollup, skip`);
+      console.error(`Invalid resolve action "${action}" for ID ${id}. Valid: foundation, rollup, skip`);
       process.exit(1);
     }
 
@@ -159,7 +159,7 @@ function previewMode(db, threshold) {
   if (ambiguous.length > 0) {
     console.log(`AMBIGUOUS — ${ambiguous.length} entries (no rubric match, need judgment):`);
     for (const e of ambiguous) {
-      console.log(`  [id:${e.id}] "${e.message}"  → signal / rollup / skip`);
+      console.log(`  [id:${e.id}] "${e.message}"  → foundation / rollup / skip`);
     }
     console.log();
   }
@@ -170,7 +170,7 @@ function previewMode(db, threshold) {
 
   console.log('Run: pebbl compact --execute');
   if (ambiguous.length > 0) {
-    const resolveIds = ambiguous.map(e => `${e.id}:signal`).join(',');
+    const resolveIds = ambiguous.map(e => `${e.id}:foundation`).join(',');
     console.log(`Resolve ambiguous: pebbl compact --execute --resolve ${resolveIds}`);
   }
 }
@@ -232,8 +232,8 @@ function executeMode(db, pebblDir, config, resolveRaw) {
     }
 
     for (const [id, action] of resolveMap) {
-      if (action === 'signal') {
-        db.prepare("UPDATE logs SET tier = 'signal' WHERE id = ?").run(id);
+      if (action === 'foundation') {
+        db.prepare("UPDATE logs SET tier = 'foundation' WHERE id = ?").run(id);
       } else if (action === 'rollup') {
         db.prepare('DELETE FROM logs WHERE id = ?').run(id);
       }
@@ -256,11 +256,11 @@ function executeMode(db, pebblDir, config, resolveRaw) {
   regenerateMarkdown(pebblDir);
   qmdUpdate(pebblDir);
 
-  console.log(`Compacted ${allToArchive.length} detail entries into rollups.`);
+  console.log(`Compacted ${allToArchive.length} detail/component entries into rollups.`);
   if (resolveMap.size > 0) {
-    const signalCount = [...resolveMap.values()].filter(a => a === 'signal').length;
+    const foundationCount = [...resolveMap.values()].filter(a => a === 'foundation').length;
     const rollupCount = [...resolveMap.values()].filter(a => a === 'rollup').length;
-    console.log(`Resolved ${signalCount + rollupCount} ambiguous entries (${signalCount} signal, ${rollupCount} rollup).`);
+    console.log(`Resolved ${foundationCount + rollupCount} ambiguous entries (${foundationCount} foundation, ${rollupCount} rollup).`);
   }
   if (expiredFleeting.length > 0) {
     console.log(`Deleted ${expiredFleeting.length} expired fleeting entries.`);

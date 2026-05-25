@@ -22,11 +22,26 @@ CREATE TABLE IF NOT EXISTS commits (
   message   TEXT NOT NULL,
   files     TEXT
 );
+CREATE TABLE IF NOT EXISTS handoffs (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp        TEXT    NOT NULL,
+  summary          TEXT    NOT NULL,
+  done             TEXT,
+  todo             TEXT,
+  blocked          TEXT,
+  topics           TEXT,
+  source           TEXT    NOT NULL DEFAULT 'agent',
+  session_entries  TEXT,
+  session_commits  TEXT,
+  status           TEXT    NOT NULL DEFAULT 'open',
+  closed_at        TEXT,
+  promoted_log_id  INTEGER
+);
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '0.2');
+INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '0.3');
 `;
 
 const INDEXES = `

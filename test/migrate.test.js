@@ -63,12 +63,15 @@ describe('migrate', () => {
       INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '0.2');
     `);
     migrate(db);
-    assert.strictEqual(getVersion(db), 0.2);
+    assert.strictEqual(getVersion(db), 0.3);
     const cols = db.prepare("PRAGMA table_info(logs)").all();
     const names = cols.map(c => c.name);
     assert(names.includes('category'));
     assert(names.includes('tier'));
     assert(names.includes('topics'));
+    // v0.3: migration is a no-op on a new DB (no signal entries to rename)
+    const tierDefault = cols.find(c => c.name === 'tier');
+    assert.strictEqual(tierDefault.dflt_value, "'detail'");
     db.close();
   });
 
@@ -78,7 +81,7 @@ describe('migrate', () => {
     const db = new Database(dbPath);
     migrate(db);
 
-    assert.strictEqual(getVersion(db), 0.2);
+    assert.strictEqual(getVersion(db), 0.3);
 
     const cols = db.prepare("PRAGMA table_info(logs)").all();
     const names = cols.map(c => c.name);
@@ -108,13 +111,13 @@ describe('migrate', () => {
     const db = new Database(dbPath);
 
     migrate(db);
-    assert.strictEqual(getVersion(db), 0.2);
+    assert.strictEqual(getVersion(db), 0.3);
 
     assert.doesNotThrow(() => {
       migrate(db);
     });
 
-    assert.strictEqual(getVersion(db), 0.2);
+    assert.strictEqual(getVersion(db), 0.3);
 
     const cols = db.prepare("PRAGMA table_info(logs)").all();
     const names = cols.map(c => c.name);
@@ -141,7 +144,7 @@ describe('ensureProjectFiles', () => {
 
   it('does not overwrite existing rubric.yml', () => {
     dir = tmpDir();
-    const custom = 'rules:\n  - pattern: "custom"\n    category: quality\n    tier: signal\n';
+    const custom = 'rules:\n  - pattern: "custom"\n    category: quality\n    tier: component\n';
     fs.writeFileSync(path.join(dir, 'rubric.yml'), custom);
     ensureProjectFiles(dir);
     assert.strictEqual(fs.readFileSync(path.join(dir, 'rubric.yml'), 'utf8'), custom);

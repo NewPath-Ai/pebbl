@@ -1,6 +1,6 @@
 {
   "name": "pebbl",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local project memory CLI — stacking pebbles over time",
   "bin": {
     "pebbl": "./bin/pebbl.js"

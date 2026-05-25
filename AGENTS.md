@@ -23,6 +23,7 @@ pebbl log "message"        # after any significant decision or failure
 - Decisions made and the reasoning behind them
 - Constraints discovered during implementation
 - Anything you'd want to know at the start of the next session
+- Session handoffs when done working (`pebbl handoff "summary" --done "..." --todo "..."`)
 
 ## What not to log
 
@@ -64,12 +65,37 @@ pebbl log "modules split into store and renderer" --cat structure --topic notes,
 pebbl log "all dates use ISO 8601" --cat pattern --topic conventions
 ```
 
-### End of every session — required format
+### End of every session — handoff
 
-Log a session summary using exactly this format (the `[session]` prefix is required
-for compaction to identify session entries):
+Use `pebbl handoff` to create a structured handoff for the next agent. This captures
+what you did, what remains, and auto-collects your session's log entries and commits:
 ```bash
-pebbl log "[session] built add/list/search commands, chose markdown storage" --cat decision --topic <main-area-worked-on> --source agent --tier fleeting
+pebbl handoff "built auth module, chose bcrypt" \
+  --done "password hashing; login endpoint; tests" \
+  --todo "forgot-password flow; rate limiting" \
+  --topic auth --source agent
+```
+
+The next agent sees the handoff automatically via `pebbl context`. When they've
+picked up the work, they close it:
+```bash
+pebbl handoff --close
+```
+
+Closing a handoff:
+- Creates a permanent foundation-tier log entry summarizing the handoff
+- Marks session detail entries as compaction-eligible
+- Clears the handoff from `pebbl context`
+
+Other handoff commands:
+```bash
+pebbl handoff --latest          # show the most recent handoff
+pebbl handoff --list            # list recent handoffs
+```
+
+**Fallback (if pebbl < 0.3):** use the `[session]` log format:
+```bash
+pebbl log "[session] summary of work" --topic <area> --source agent
 ```
 
 ### Correcting a past entry
@@ -80,7 +106,7 @@ pebbl log "switched from Redis to Postgres" --cat decision --topic auth --correc
 ### Compaction (when notified)
 ```bash
 pebbl compact --preview
-pebbl compact --execute --resolve 12:signal,15:rollup,18:skip
+pebbl compact --execute --resolve 12:foundation,15:rollup,18:skip
 ```
 
 ### What to log
@@ -113,7 +139,7 @@ Rule of thumb: if your entry reads like config documentation, you forgot the rat
 Use "because", "to prevent", "so that", or "the problem is" to connect mechanics to
 motivation. Entries that only list parameters (default, threshold, weight, score, blend,
 config, param, formula) with numbers get auto-tagged as detail tier — they will
-persist but are flagged as lower-authority than signal entries with proper rationale.
+persist but are flagged as lower-authority than component/foundation entries with proper rationale.
 
 ### What not to log
 - Routine code changes (git hook captures those)

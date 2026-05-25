@@ -1,11 +1,13 @@
 'use strict';
 
 const KNOWN_FLAGS = new Set([
-  'cat', 'topic', 'source', 'tier',
+  'cat', 'topic', 'source', 'tier', 'scope',
   'relates', 'corrects', 'preview', 'execute', 'resolve',
+  'done', 'todo', 'blocked', 'latest', 'list', 'close',
+  'show', 'generate',
 ]);
 
-const BOOLEAN_FLAGS = new Set(['preview', 'execute']);
+const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'show', 'generate']);
 
 function parseArgs(args) {
   const flags = {};

@@ -75,4 +75,22 @@ describe('parseArgs', () => {
     assert.deepStrictEqual(result.flags, { resolve: '22:signal,15:rollup' });
     assert.deepStrictEqual(result.positional, []);
   });
+
+  it('parses handoff value flags (--done, --todo, --blocked)', () => {
+    const result = parseArgs(['summary', '--done', 'task A; task B', '--todo', 'task C', '--blocked', 'waiting on API']);
+    assert.deepStrictEqual(result.flags, { done: 'task A; task B', todo: 'task C', blocked: 'waiting on API' });
+    assert.deepStrictEqual(result.positional, ['summary']);
+  });
+
+  it('parses handoff boolean flags (--latest, --list, --close)', () => {
+    const result = parseArgs(['--latest']);
+    assert.deepStrictEqual(result.flags, { latest: true });
+    assert.deepStrictEqual(result.positional, []);
+
+    const result2 = parseArgs(['--list']);
+    assert.deepStrictEqual(result2.flags, { list: true });
+
+    const result3 = parseArgs(['--close', '--topic', 'auth']);
+    assert.deepStrictEqual(result3.flags, { close: true, topic: 'auth' });
+  });
 });
