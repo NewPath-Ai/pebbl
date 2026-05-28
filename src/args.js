@@ -3,7 +3,7 @@
 const KNOWN_FLAGS = new Set([
   'cat', 'topic', 'source', 'tier', 'scope',
   'relates', 'corrects', 'preview', 'execute', 'resolve',
-  'done', 'todo', 'blocked', 'latest', 'list', 'close',
+  'done', 'todo', 'blocked', 'docs', 'latest', 'list', 'close',
   'show', 'generate',
 ]);
 

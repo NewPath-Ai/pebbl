@@ -13,6 +13,7 @@ const commands = {
   eject:        () => require('../src/eject')(),
   handoff:      () => require('../src/handoff')(args),
   narrative:    () => require('../src/narrative')(args),
+  feedback:     () => require('../src/feedback')(args),
   'log-commit': () => require('../src/log-commit')(args[0], args[1], args[2]),
 };
 
@@ -56,6 +57,8 @@ Usage:
     --preview                 Show groups ready for compaction
     --execute                 Execute compaction
     --resolve <id:action,...> Resolve ambiguous entries
+  pebbl feedback "[message]"  Drop feedback about pebbl when it misbehaves here
+    --list                    Review feedback recorded in this repo
   pebbl upgrade               Update .pebbl/ to the latest version
   pebbl eject                 Remove pebbl config from this project
   pebbl log-commit            (called by git post-commit hook)

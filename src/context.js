@@ -89,6 +89,7 @@ function showOpenHandoff(db) {
   if (openHandoff.todo) console.log(`  todo: ${openHandoff.todo}`);
   if (openHandoff.blocked) console.log(`  blocked: ${openHandoff.blocked}`);
   if (openHandoff.topics) console.log(`  topics: ${openHandoff.topics}`);
+  console.log('  → run: pebbl handoff --close  once you have picked up this work');
   console.log('──');
   console.log('');
 }

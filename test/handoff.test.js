@@ -37,13 +37,14 @@ function setupDb(dir) {
       session_commits  TEXT,
       status           TEXT    NOT NULL DEFAULT 'open',
       closed_at        TEXT,
-      promoted_log_id  INTEGER
+      promoted_log_id  INTEGER,
+      docs             TEXT
     );
     CREATE TABLE IF NOT EXISTS meta (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
-    INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '0.3');
+    INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '0.4');
   `);
   return db;
 }
@@ -382,5 +383,43 @@ describe('handoff - edge cases', () => {
     assert.strictEqual(handoff1.status, 'open');
     assert.strictEqual(handoff2.status, 'closed');
     assert.strictEqual(handoff2.closed_at, closeTs);
+  });
+});
+
+describe('handoff - docs', () => {
+  let dir, db;
+
+  after(() => {
+    if (db) db.close();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('stores docs as JSON array', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    const docs = JSON.stringify(['README.md', 'https://example.com/spec']);
+    db.prepare(
+      'INSERT INTO handoffs (timestamp, summary, status, docs) VALUES (?, ?, ?, ?)'
+    ).run('2026-05-27T10:00:00.000Z', 'test', 'open', docs);
+
+    const row = db.prepare('SELECT * FROM handoffs WHERE id = 1').get();
+    const parsed = JSON.parse(row.docs);
+
+    assert.strictEqual(parsed.length, 2);
+    assert.strictEqual(parsed[0], 'README.md');
+    assert.strictEqual(parsed[1], 'https://example.com/spec');
+  });
+
+  it('docs defaults to null when not provided', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    db.prepare(
+      'INSERT INTO handoffs (timestamp, summary, status) VALUES (?, ?, ?)'
+    ).run('2026-05-27T10:00:00.000Z', 'test', 'open');
+
+    const row = db.prepare('SELECT * FROM handoffs WHERE id = 1').get();
+    assert.strictEqual(row.docs, null);
   });
 });

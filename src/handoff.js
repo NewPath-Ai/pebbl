@@ -115,6 +115,9 @@ module.exports = function handoff(args) {
   const done = flags.done || null;
   const todo = flags.todo || null;
   const blocked = flags.blocked || null;
+  const docs = flags.docs
+    ? JSON.stringify(flags.docs.split(',').map(s => s.trim()).filter(Boolean))
+    : null;
 
   // Auto-collect: find all log entries since the last handoff (or last 2 hours)
   const lastHandoff = db.prepare(
@@ -143,9 +146,9 @@ module.exports = function handoff(args) {
 
   // Insert the handoff
   const result = db.prepare(`
-    INSERT INTO handoffs (timestamp, summary, done, todo, blocked, topics, source, session_entries, session_commits, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
-  `).run(ts, summary, done, todo, blocked, topics, source, JSON.stringify(sessionEntries), JSON.stringify(sessionCommits));
+    INSERT INTO handoffs (timestamp, summary, done, todo, blocked, topics, source, session_entries, session_commits, status, docs)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
+  `).run(ts, summary, done, todo, blocked, topics, source, JSON.stringify(sessionEntries), JSON.stringify(sessionCommits), docs);
 
   // Display
   console.log(`\n── Handoff #${result.lastInsertRowid} created ──`);
@@ -178,6 +181,34 @@ function displayHandoff(row, db) {
   if (row.blocked) {
     console.log('\nBlocked:');
     row.blocked.split(';').map(s => s.trim()).filter(Boolean).forEach(item => console.log(`  - ${item}`));
+  }
+
+  // Show referenced docs sorted by freshness
+  if (row.docs) {
+    const docList = JSON.parse(row.docs || '[]');
+    if (docList.length > 0) {
+      const withAge = docList.map(d => {
+        try {
+          const stat = fs.statSync(d);
+          return { path: d, mtime: stat.mtime };
+        } catch {
+          return { path: d, mtime: null };
+        }
+      }).sort((a, b) => {
+        if (!a.mtime && !b.mtime) return 0;
+        if (!a.mtime) return 1;
+        if (!b.mtime) return -1;
+        return b.mtime - a.mtime;
+      });
+
+      console.log('\nDocs:');
+      for (const d of withAge) {
+        const age = d.mtime
+          ? `updated ${d.mtime.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+          : 'file not found';
+        console.log(`  ${d.path}  (${age})`);
+      }
+    }
   }
 
   // Show auto-collected session activity

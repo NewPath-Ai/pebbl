@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS handoffs (
   session_commits  TEXT,
   status           TEXT    NOT NULL DEFAULT 'open',
   closed_at        TEXT,
-  promoted_log_id  INTEGER
+  promoted_log_id  INTEGER,
+  docs             TEXT
 );
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,

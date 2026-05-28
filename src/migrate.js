@@ -51,6 +51,15 @@ function migrate(db) {
     setVersion(db, 0.3);
     console.error('pebbl: migrated db to v0.3 (signal → component tier)');
   }
+  if (version < 0.4) {
+    const columns = db.prepare('PRAGMA table_info(handoffs)').all();
+    const colNames = new Set(columns.map(c => c.name));
+    if (!colNames.has('docs')) {
+      db.exec('ALTER TABLE handoffs ADD COLUMN docs TEXT');
+    }
+    setVersion(db, 0.4);
+    console.error('pebbl: migrated db to v0.4 (handoffs.docs)');
+  }
 }
 
 module.exports = { migrate, getVersion };
