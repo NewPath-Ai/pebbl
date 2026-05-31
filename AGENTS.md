@@ -22,6 +22,7 @@ pebbl log "message"        # after any significant decision or failure
 - Approaches that failed and why
 - Decisions made and the reasoning behind them
 - Constraints discovered during implementation
+- Verification gates and decisive findings — log them the moment they land, not at handoff close. A handoff is a recap; the atomic log is the searchable record.
 - Anything you'd want to know at the start of the next session
 - Session handoffs when done working (`pebbl handoff "summary" --done "..." --todo "..."`)
 
@@ -76,6 +77,11 @@ pebbl handoff "built auth module, chose bcrypt" \
   --topic auth --source agent
 ```
 
+**Write `--done`/`--todo`/`--blocked` as `;`-separated atomic items.** On close each
+item becomes its own searchable block. One long run-on with no `;` materializes as a
+single wall of text that search can't localize within — pebbl warns you when a field
+looks like that. Keep each item short and self-contained.
+
 The next agent sees the handoff automatically via `pebbl context`. When they've
 picked up the work, they close it:
 ```bash
@@ -83,7 +89,9 @@ pebbl handoff --close
 ```
 
 Closing a handoff:
-- Creates a permanent foundation-tier log entry summarizing the handoff
+- Materializes the handoff to `handoffs.md`, one searchable block per `;`-split item
+  (summary/done/todo/blocked are kept structured in the handoffs table — they are NOT
+  flattened into a single log entry)
 - Marks session detail entries as compaction-eligible
 - Clears the handoff from `pebbl context`
 

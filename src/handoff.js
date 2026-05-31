@@ -57,27 +57,16 @@ module.exports = function handoff(args) {
       process.exit(1);
     }
 
-    // A. Build promoted summary for foundation-tier log entry
-    const parts = [`handoff #${row.id} closed: ${row.summary}`];
-    if (row.done) parts.push(`done: ${row.done}`);
-    if (row.todo) parts.push(`remaining: ${row.todo}`);
-    if (row.blocked) parts.push(`blocked: ${row.blocked}`);
-    const promotedMessage = parts.join('. ');
-
-    // B. Insert foundation-tier log entry
     const ts = new Date().toISOString();
-    const logResult = db.prepare(`
-      INSERT INTO logs (timestamp, source, category, tier, message, topics)
-      VALUES (?, 'agent', 'decision', 'foundation', ?, ?)
-    `).run(ts, promotedMessage, row.topics || null);
-    const promotedLogId = logResult.lastInsertRowid;
 
-    // C. Close the handoff
+    // A. Mark the handoff closed. The handoffs table is the authority for
+    // summary/done/todo/blocked — we no longer flatten those fields into a
+    // single foundation log row (that produced unsearchable multi-KB blobs).
     db.prepare(
-      "UPDATE handoffs SET status = 'closed', closed_at = ?, promoted_log_id = ? WHERE id = ?"
-    ).run(ts, promotedLogId, row.id);
+      "UPDATE handoffs SET status = 'closed', closed_at = ? WHERE id = ?"
+    ).run(ts, row.id);
 
-    // D. Demote session detail entries to fleeting (compaction-eligible)
+    // B. Demote session detail entries to fleeting (compaction-eligible).
     const entryIds = JSON.parse(row.session_entries || '[]');
     if (entryIds.length > 0) {
       const placeholders = entryIds.map(() => '?').join(',');
@@ -86,16 +75,13 @@ module.exports = function handoff(args) {
       ).run(...entryIds);
     }
 
-    // E. Also write the promoted entry to manual-logs.md
-    const mdComment = `<!-- cat:decision topic:${row.topics || ''} tier:foundation source:agent -->`;
-    const md = `## ${ts} - ${promotedMessage}\n${mdComment}\n\n`;
-    fs.appendFileSync(path.join(pebblDir, 'manual-logs.md'), md);
-
-    // F. QMD update
+    // C. Re-materialize handoffs.md at item granularity so each done/todo/
+    // blocked item is its own searchable block, then refresh the index.
+    materializeHandoffsMd(pebblDir, db);
     qmdUpdate(pebblDir);
 
-    // G. Display result
-    console.log(`Handoff #${row.id} closed. Foundation entry #${promotedLogId} created.`);
+    // D. Display result
+    console.log(`Handoff #${row.id} closed.`);
     if (entryIds.length > 0) {
       console.log(`${entryIds.length} session entries marked for compaction.`);
     }
@@ -115,6 +101,13 @@ module.exports = function handoff(args) {
   const done = flags.done || null;
   const todo = flags.todo || null;
   const blocked = flags.blocked || null;
+
+  // Warn on fields that will materialize as one unsearchable block. Each field
+  // becomes ';'-split items on close — a long field with no separators stays a
+  // wall of text that search can't localize within.
+  checkFieldQuality(done, 'done');
+  checkFieldQuality(todo, 'todo');
+  checkFieldQuality(blocked, 'blocked');
   const docs = flags.docs
     ? JSON.stringify(flags.docs.split(',').map(s => s.trim()).filter(Boolean))
     : null;
@@ -150,6 +143,10 @@ module.exports = function handoff(args) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
   `).run(ts, summary, done, todo, blocked, topics, source, JSON.stringify(sessionEntries), JSON.stringify(sessionCommits), docs);
 
+  // Re-materialize so the new (open) handoff is searchable immediately.
+  materializeHandoffsMd(pebblDir, db);
+  qmdUpdate(pebblDir);
+
   // Display
   console.log(`\n── Handoff #${result.lastInsertRowid} created ──`);
   console.log(`Summary: ${summary}`);
@@ -160,6 +157,55 @@ module.exports = function handoff(args) {
   console.log(`Session: ${sessionEntries.length} log entries, ${sessionCommits.length} commits captured`);
   console.log('──');
 };
+
+// Split a handoff field into atomic items on ';'.
+function splitItems(field) {
+  if (!field) return [];
+  return field.split(';').map(s => s.trim()).filter(Boolean);
+}
+
+// Warn (non-fatal) when a field is long but has no separators, so it would
+// materialize as a single unsearchable block.
+const FIELD_BLOCK_WARN_CHARS = 280;
+function checkFieldQuality(field, name) {
+  if (field && field.length > FIELD_BLOCK_WARN_CHARS && splitItems(field).length < 2) {
+    console.error(
+      `pebbl: --${name} is ${field.length} chars with no ';' separators — it will ` +
+      `materialize as one big block search can't localize. Split it into ';'-separated items.`
+    );
+  }
+}
+
+// Regenerate handoffs.md from the handoffs table. Both open and closed handoffs
+// are included so search finds in-progress work too (open ones carry a
+// status:open tag so callers can render them differently). Each handoff becomes
+// a summary block plus one block per ';'-split done/todo/blocked item. Overwrites
+// the file every time (idempotent) — the table is the authority.
+function materializeHandoffsMd(pebblDir, db) {
+  const rows = db.prepare(
+    "SELECT * FROM handoffs ORDER BY id ASC"
+  ).all();
+
+  const out = ['# Handoffs', ''];
+  for (const row of rows) {
+    const ts = row.closed_at || row.timestamp;
+    const topic = row.topics || '';
+    const status = row.status || 'open';
+    const blocks = [['summary', `handoff #${row.id}: ${row.summary}`]];
+    for (const field of ['done', 'todo', 'blocked']) {
+      for (const item of splitItems(row[field])) {
+        blocks.push([field, `handoff #${row.id} ${field}: ${item}`]);
+      }
+    }
+    for (const [field, message] of blocks) {
+      out.push(`## ${ts} - ${message}`);
+      out.push(`<!-- handoff:${row.id} field:${field} topic:${topic} status:${status} -->`);
+      out.push('');
+    }
+  }
+
+  fs.writeFileSync(path.join(pebblDir, 'handoffs.md'), out.join('\n'));
+}
 
 function displayHandoff(row, db) {
   const date = (row.timestamp || '').slice(0, 10);
@@ -236,3 +282,6 @@ function displayHandoff(row, db) {
 }
 
 module.exports.displayHandoff = displayHandoff;
+module.exports.splitItems = splitItems;
+module.exports.checkFieldQuality = checkFieldQuality;
+module.exports.materializeHandoffsMd = materializeHandoffsMd;

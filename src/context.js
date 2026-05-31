@@ -94,6 +94,28 @@ function showOpenHandoff(db) {
   console.log('');
 }
 
+function showRecentHandoffs(db) {
+  const hasHandoffsTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='handoffs'").get();
+  if (!hasHandoffsTable) return;
+
+  const rows = db.prepare(
+    "SELECT * FROM handoffs WHERE status = 'closed' ORDER BY id DESC LIMIT 3"
+  ).all();
+  if (rows.length === 0) return;
+
+  const trunc = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
+
+  console.log('--- RECENT HANDOFFS ---');
+  for (const row of rows) {
+    const date = relativeDate(row.closed_at || row.timestamp);
+    console.log(`  #${row.id} (${date}) ${trunc(row.summary, 90)}`);
+    const todos = (row.todo || '').split(';').map(s => s.trim()).filter(Boolean);
+    todos.slice(0, 2).forEach(t => console.log(`    todo: ${trunc(t, 90)}`));
+    if (todos.length > 2) console.log(`    … +${todos.length - 2} more todo (pebbl handoff --latest)`);
+  }
+  console.log('');
+}
+
 function showEntryWithThinCheck(row, cwd) {
   console.log(displayEntry(row));
   const msg = row.message || '';
@@ -281,6 +303,9 @@ function contextDefault(pebblDir, db) {
     }
   }
   console.log('---');
+  console.log('');
+
+  showRecentHandoffs(db);
 
   showCompactionNotifications(db, pebblDir);
 }

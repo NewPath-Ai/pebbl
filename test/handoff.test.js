@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const Database = require('better-sqlite3');
+const { splitItems, checkFieldQuality, materializeHandoffsMd } = require('../src/handoff');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-test-'));
@@ -139,42 +140,76 @@ describe('handoff - close', () => {
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('promotes handoff summary to foundation-tier log entry', () => {
+  it('does NOT flatten handoff fields into a foundation log row', () => {
     dir = tmpDir();
     db = setupDb(dir);
 
     const ts = '2026-05-25T10:00:00.000Z';
     db.prepare(`
-      INSERT INTO handoffs (timestamp, summary, done, todo, blocked, topics, source, session_entries, session_commits, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(ts, 'completed auth module', 'implemented JWT; added tests', 'write docs', 'CI pipeline', 'auth,security', 'agent', '[]', '[]', 'open');
+      INSERT INTO handoffs (timestamp, summary, done, todo, blocked, topics, source, session_entries, session_commits, status, closed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'closed', ?)
+    `).run(ts, 'completed auth module', 'implemented JWT; added tests', 'write docs', 'CI pipeline', 'auth,security', 'agent', '[]', '[]', '2026-05-25T18:00:00.000Z');
 
-    // Simulate close logic — build promoted message
-    const row = db.prepare("SELECT * FROM handoffs WHERE status = 'open' ORDER BY id DESC LIMIT 1").get();
+    // New close behavior: materialize to handoffs.md, never promote to logs.
+    materializeHandoffsMd(dir, db);
 
-    const parts = [`handoff #${row.id} closed: ${row.summary}`];
-    if (row.done) parts.push(`done: ${row.done}`);
-    if (row.todo) parts.push(`remaining: ${row.todo}`);
-    if (row.blocked) parts.push(`blocked: ${row.blocked}`);
-    const promotedMessage = parts.join('. ');
+    const logCount = db.prepare('SELECT COUNT(*) AS c FROM logs').get();
+    assert.strictEqual(logCount.c, 0, 'close must not create any log rows');
+  });
 
-    const closeTs = '2026-05-25T18:00:00.000Z';
-    const logResult = db.prepare(`
-      INSERT INTO logs (timestamp, source, category, tier, message, topics)
-      VALUES (?, 'agent', 'decision', 'foundation', ?, ?)
-    `).run(closeTs, promotedMessage, row.topics);
+  it('materializes each ;-split item as its own searchable block', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
 
-    const logEntry = db.prepare('SELECT * FROM logs WHERE id = ?').get(logResult.lastInsertRowid);
+    db.prepare(`
+      INSERT INTO handoffs (timestamp, summary, done, todo, blocked, topics, status, closed_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'closed', ?)
+    `).run('2026-05-25T10:00:00.000Z', 'completed auth module', 'implemented JWT; added tests', 'write docs', 'CI pipeline', 'auth,security', '2026-05-25T18:00:00.000Z');
 
-    assert(logEntry);
-    assert.strictEqual(logEntry.tier, 'foundation');
-    assert.strictEqual(logEntry.category, 'decision');
-    assert.strictEqual(logEntry.source, 'agent');
-    assert(logEntry.message.includes('handoff #1 closed: completed auth module'));
-    assert(logEntry.message.includes('done: implemented JWT; added tests'));
-    assert(logEntry.message.includes('remaining: write docs'));
-    assert(logEntry.message.includes('blocked: CI pipeline'));
-    assert.strictEqual(logEntry.topics, 'auth,security');
+    materializeHandoffsMd(dir, db);
+    const md = fs.readFileSync(path.join(dir, 'handoffs.md'), 'utf8');
+
+    // One block per item — two done items, one todo, one blocked, plus summary.
+    assert.match(md, /## .+ - handoff #1: completed auth module/);
+    assert.match(md, /## .+ - handoff #1 done: implemented JWT\n<!-- handoff:1 field:done topic:auth,security status:closed -->/);
+    assert.match(md, /## .+ - handoff #1 done: added tests\n<!-- handoff:1 field:done topic:auth,security status:closed -->/);
+    assert.match(md, /## .+ - handoff #1 todo: write docs\n<!-- handoff:1 field:todo topic:auth,security status:closed -->/);
+    assert.match(md, /## .+ - handoff #1 blocked: CI pipeline\n<!-- handoff:1 field:blocked topic:auth,security status:closed -->/);
+  });
+
+  it('materializes both open and closed handoffs with a status tag', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    db.prepare("INSERT INTO handoffs (timestamp, summary, done, status, closed_at) VALUES (?,?,?,?,?)")
+      .run('2026-05-25T10:00:00.000Z', 'closed one', 'did a thing', 'closed', '2026-05-25T11:00:00.000Z');
+    db.prepare("INSERT INTO handoffs (timestamp, summary, done, status) VALUES (?,?,?,?)")
+      .run('2026-05-26T10:00:00.000Z', 'open one', 'in-progress work', 'open');
+
+    materializeHandoffsMd(dir, db);
+    const md = fs.readFileSync(path.join(dir, 'handoffs.md'), 'utf8');
+
+    assert.match(md, /closed one/);
+    assert.match(md, /open one/);
+    assert.match(md, /in-progress work/);
+    // Status is encoded in the comment so search can render it distinctly.
+    assert.match(md, /<!-- handoff:1 field:summary topic: status:closed -->/);
+    assert.match(md, /<!-- handoff:2 field:summary topic: status:open -->/);
+  });
+
+  it('materialize is idempotent (overwrites, does not append)', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    db.prepare("INSERT INTO handoffs (timestamp, summary, done, status, closed_at) VALUES (?,?,?,?,?)")
+      .run('2026-05-25T10:00:00.000Z', 'h', 'item one; item two', 'closed', '2026-05-25T11:00:00.000Z');
+
+    materializeHandoffsMd(dir, db);
+    const first = fs.readFileSync(path.join(dir, 'handoffs.md'), 'utf8');
+    materializeHandoffsMd(dir, db);
+    const second = fs.readFileSync(path.join(dir, 'handoffs.md'), 'utf8');
+
+    assert.strictEqual(first, second);
   });
 
   it('demotes session detail entries to fleeting', () => {
@@ -383,6 +418,31 @@ describe('handoff - edge cases', () => {
     assert.strictEqual(handoff1.status, 'open');
     assert.strictEqual(handoff2.status, 'closed');
     assert.strictEqual(handoff2.closed_at, closeTs);
+  });
+});
+
+describe('handoff - field helpers', () => {
+  it('splitItems splits on ; and drops empties/whitespace', () => {
+    assert.deepStrictEqual(splitItems('a; b ; ;c'), ['a', 'b', 'c']);
+    assert.deepStrictEqual(splitItems(''), []);
+    assert.deepStrictEqual(splitItems(null), []);
+    assert.deepStrictEqual(splitItems('single item only'), ['single item only']);
+  });
+
+  it('checkFieldQuality warns on long fields with no separators', () => {
+    const warnings = [];
+    const origErr = console.error;
+    console.error = (msg) => warnings.push(msg);
+    try {
+      checkFieldQuality('x'.repeat(300), 'done');            // long, no ; → warn
+      checkFieldQuality('a; b; c'.padEnd(300, ';d'), 'done'); // long but split → no warn
+      checkFieldQuality('short field', 'done');               // short → no warn
+    } finally {
+      console.error = origErr;
+    }
+    assert.strictEqual(warnings.length, 1);
+    assert.match(warnings[0], /--done/);
+    assert.match(warnings[0], /one big block/);
   });
 });
 
