@@ -138,6 +138,11 @@ module.exports = function log(args) {
   const relatesTo = flags.relates ? parseInt(flags.relates, 10) : null;
   const corrects = flags.corrects ? parseInt(flags.corrects, 10) : null;
 
+  if (!isSession && !flags.cat && category === 'uncategorized') {
+    console.error(`pebbl: no --cat given and rubric didn't match — entry stored as 'uncategorized'`);
+    console.error(`       pick one: ${VALID_CATEGORIES.join(', ')}`);
+  }
+
   const mdEntry = formatEntry(ts, message, category, tier, source, topics);
   const md = `## ${ts} - ${message}\n${mdEntry.comment}\n\n`;
   fs.appendFileSync(path.join(pebblDir, 'manual-logs.md'), md);
