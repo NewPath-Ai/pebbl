@@ -83,13 +83,13 @@ function showOpenHandoff(db) {
 
   const ago = Math.round((Date.now() - new Date(openHandoff.timestamp).getTime()) / 3600000);
   const agoText = ago < 1 ? 'just now' : `${ago}h ago`;
-  console.log(`── Open handoff (#${openHandoff.id}, ${agoText}) ──`);
+  console.log(`── Open handoff from previous agent (#${openHandoff.id}, ${agoText}) ──`);
   console.log(openHandoff.summary);
-  if (openHandoff.done) console.log(`  done: ${openHandoff.done}`);
-  if (openHandoff.todo) console.log(`  todo: ${openHandoff.todo}`);
-  if (openHandoff.blocked) console.log(`  blocked: ${openHandoff.blocked}`);
-  if (openHandoff.topics) console.log(`  topics: ${openHandoff.topics}`);
-  console.log('  → run: pebbl handoff --close  once you have picked up this work');
+  if (openHandoff.done)    console.log(`  previous agent completed: ${openHandoff.done}`);
+  if (openHandoff.todo)    console.log(`  remaining for you:        ${openHandoff.todo}`);
+  if (openHandoff.blocked) console.log(`  blocked:                  ${openHandoff.blocked}`);
+  if (openHandoff.topics)  console.log(`  topics:                   ${openHandoff.topics}`);
+  console.log('  → when you finish the remaining work, run: pebbl handoff --close');
   console.log('──');
   console.log('');
 }
