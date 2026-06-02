@@ -22,13 +22,25 @@ module.exports = function eject() {
   const cwd = process.cwd();
   let removed = false;
 
-  // Remove pebbl section from AGENTS.md
-  if (removeBlock(
-    path.join(cwd, 'AGENTS.md'),
+  // Remove pebbl section from AGENTS.md — try sentinel format first, then legacy.
+  const agentMd = path.join(cwd, 'AGENTS.md');
+  if (removeBlock(agentMd, '<!-- pebbl:begin -->', '<!-- pebbl:end -->')) {
+    console.log('Removed pebbl block from AGENTS.md');
+    removed = true;
+  } else if (removeBlock(
+    agentMd,
     '\n## Pebbl — Project Memory Protocol',
     '- Anything obvious from reading the code\n'
   )) {
     console.log('Removed pebbl block from AGENTS.md');
+    removed = true;
+  }
+
+  // Remove tool-managed PEBBL.md
+  const pebblMd = path.join(cwd, 'PEBBL.md');
+  if (fs.existsSync(pebblMd)) {
+    fs.unlinkSync(pebblMd);
+    console.log('Removed PEBBL.md');
     removed = true;
   }
 

@@ -15,37 +15,53 @@ pebbl log-commit "$HASH" "$MESSAGE" "$FILES"
 
 function upgradeAgentsMd(cwd) {
   const agentMd = path.join(cwd, 'AGENTS.md');
-  const marker = '## Pebbl — Project Memory Protocol';
-  const endMarker = '\n## ';
+  const { AGENT_SECTION, AGENT_BEGIN, AGENT_END } = require('./init');
 
   if (!fs.existsSync(agentMd)) {
     console.log('AGENTS.md not found — run pebbl init first');
     return;
   }
 
-  let content = fs.readFileSync(agentMd, 'utf8');
+  const content = fs.readFileSync(agentMd, 'utf8');
 
-  if (!content.includes(marker)) {
-    fs.appendFileSync(agentMd, '\n' + require('./init').AGENT_SECTION);
-    console.log('Added pebbl section to AGENTS.md');
+  // New format: sentinel-delimited block — replace in place.
+  const beginIdx = content.indexOf(AGENT_BEGIN);
+  if (beginIdx !== -1) {
+    const endIdx = content.indexOf(AGENT_END, beginIdx);
+    if (endIdx !== -1) {
+      const before = content.slice(0, beginIdx).trimEnd();
+      const after = content.slice(endIdx + AGENT_END.length).trimStart();
+      const tail = after ? '\n\n' + after : '\n';
+      fs.writeFileSync(agentMd, before + AGENT_SECTION.trimEnd() + tail);
+      console.log('Updated pebbl section in AGENTS.md');
+      return;
+    }
+  }
+
+  // Old format: header `## Pebbl — Project Memory Protocol` to next `## ` or EOF.
+  const oldMarker = '## Pebbl — Project Memory Protocol';
+  const oldStart = content.indexOf(oldMarker);
+  if (oldStart !== -1) {
+    const afterStart = content.slice(oldStart + oldMarker.length);
+    const oldEnd = afterStart.indexOf('\n## ');
+    const before = content.slice(0, oldStart).trimEnd();
+    const after = oldEnd === -1 ? '' : content.slice(oldStart + oldMarker.length + oldEnd);
+    fs.writeFileSync(agentMd, before + AGENT_SECTION + after);
+    console.log('Migrated pebbl section in AGENTS.md to sentinel format');
     return;
   }
 
-  const startIdx = content.indexOf(marker);
-  const afterStart = content.slice(startIdx + marker.length);
-  const endIdx = afterStart.indexOf(endMarker);
+  // No prior block — append.
+  fs.appendFileSync(agentMd, AGENT_SECTION);
+  console.log('Added pebbl section to AGENTS.md');
+}
 
-  if (endIdx === -1) {
-    const before = content.slice(0, startIdx);
-    fs.writeFileSync(agentMd, before + require('./init').AGENT_SECTION);
-    console.log('Updated pebbl section in AGENTS.md');
-    return;
+function removeLegacyPebblMd(cwd) {
+  const pebblMd = path.join(cwd, 'PEBBL.md');
+  if (fs.existsSync(pebblMd)) {
+    fs.unlinkSync(pebblMd);
+    console.log('Removed legacy PEBBL.md (semantics now live in `pebbl help <topic>`)');
   }
-
-  const before = content.slice(0, startIdx);
-  const after = content.slice(startIdx + marker.length + endIdx);
-  fs.writeFileSync(agentMd, before + require('./init').AGENT_SECTION + after);
-  console.log('Updated pebbl section in AGENTS.md');
 }
 
 function mergeRubric(pebblDir) {
@@ -96,6 +112,7 @@ module.exports = function upgrade() {
   }
 
   upgradeAgentsMd(cwd);
+  removeLegacyPebblMd(cwd);
 
   if (qmdAvailable()) {
     try {

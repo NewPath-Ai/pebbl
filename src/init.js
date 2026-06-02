@@ -5,122 +5,32 @@ const { openDb } = require('./db');
 const { qmdAvailable, qmdCollectionCreate } = require('./qmd');
 const { DEFAULT_RUBRIC, DEFAULT_CONFIG } = require('./rubric');
 
+const AGENT_BEGIN = '<!-- pebbl:begin -->';
+const AGENT_END = '<!-- pebbl:end -->';
+
 const AGENT_SECTION = `
-## Pebbl — Project Memory Protocol
+${AGENT_BEGIN}
+## Pebbl — Memory
 
-Pebbl stores architecture decisions, conventions, and component facts for this codebase.
-Agents use it to avoid burning tokens re-discovering what's already known.
+Local CLI for project memory. Flag details: \`pebbl <cmd> --help\`. Concepts: \`pebbl help <topic>\` (categories, tiers, compaction, file-layout, entry-ids).
 
-### Start of every session
-\`\`\`bash
-pebbl context                    # recent entries, all tiers
-pebbl context --topic <area>     # entries for a specific component
-pebbl search "topic" --cat decision  # search decisions before proposing an approach
-\`\`\`
+**Every session, before code:** \`pebbl context\` (read open handoff + recent decisions). An open handoff's \`done\` field is what the *previous* agent finished — don't claim it as your own. The \`todo\` field is what's left for you. Close the handoff with \`pebbl handoff --close\` when you complete the remaining work.
 
-### Logging — ALWAYS use --cat and --topic
+**Before any non-trivial decision:** \`pebbl search "<area>"\` — don't re-litigate prior choices.
 
-Every \`pebbl log\` call **must** include \`--cat\` and \`--topic\`. Entries without
-these flags are hard to find and impossible to filter.
-
-| Category    | When to use |
-|-------------|-------------|
-| decision    | Choices made, rationale, constraints, trade-offs |
-| structure   | Component boundaries, module topology, ownership |
-| pattern     | Conventions, coding standards, design patterns |
-| data        | Models, schemas, storage choices, data flow |
-| integration | APIs, contracts, cross-component interfaces |
-| quality     | Perf targets, SLAs, security posture |
+**Log the moment a decision or failed approach lands.** Always include \`--cat\` and \`--topic\`. Always explain *why*, not just *what* — entries without rationale get auto-demoted.
 
 \`\`\`bash
-pebbl log "chose Redis for caching" --cat decision --topic auth
-pebbl log "modules split into store and renderer" --cat structure --topic notes,renderer
-pebbl log "all dates use ISO 8601" --cat pattern --topic conventions
+pebbl log "chose bcrypt over argon2 because team already operates bcrypt in prod" --cat decision --topic auth
 \`\`\`
 
-### End of every session — handoff
+**End of session:** \`pebbl handoff "<summary>" --done "a; b" --todo "c; d" --topic <area>\`. Use \`;\` to split atomic items — one run-on becomes one unsearchable blob.
 
-Use \`pebbl handoff\` to create a structured handoff for the next agent. This captures
-what you did, what remains, and auto-collects your session's log entries and commits:
-\`\`\`bash
-pebbl handoff "built auth module, chose bcrypt" \\
-  --done "password hashing; login endpoint; tests" \\
-  --todo "forgot-password flow; rate limiting" \\
-  --topic auth --source agent
-\`\`\`
-
-The next agent sees the handoff automatically via \`pebbl context\`. When they've
-picked up the work, they close it:
-\`\`\`bash
-pebbl handoff --close
-\`\`\`
-
-Closing a handoff:
-- Creates a permanent foundation-tier log entry summarizing the handoff
-- Marks session detail entries as compaction-eligible
-- Clears the handoff from \`pebbl context\`
-
-Other handoff commands:
-\`\`\`bash
-pebbl handoff --latest          # show the most recent handoff
-pebbl handoff --list            # list recent handoffs
-\`\`\`
-
-**Fallback (if pebbl < 0.3):** use the \`[session]\` log format:
-\`\`\`bash
-pebbl log "[session] summary of work" --topic <area> --source agent
-\`\`\`
-
-### Correcting a past entry
-\`\`\`bash
-pebbl log "switched from Redis to Postgres" --cat decision --topic auth --corrects <id>
-\`\`\`
-
-### Compaction (when notified)
-\`\`\`bash
-pebbl compact --preview
-pebbl compact --execute --resolve 12:foundation,15:rollup,18:skip
-\`\`\`
-
-### What to log
-- Architecture decisions and why (--cat decision)
-- Component boundaries and ownership (--cat structure)
-- Conventions and patterns adopted (--cat pattern)
-- Constraints and failed approaches (--cat decision)
-
-### Entry quality — always explain WHY
-
-The most important part of a decision entry is the rationale. Future agents need to
-understand WHY a choice was made, not just WHAT was chosen. Without rationale, agents
-may revert decisions or reintroduce already-solved problems.
-
-Bad (mechanics only):
-\`\`\`bash
-pebbl log "threshold is 0.5, weight is 0.6, W*fit + (1-W)*scorecard formula"
-\`\`\`
-This reads like a spec sheet. A future agent sees "0.5" and has no idea if it's
-arbitrary, empirical, or structural. It will guess or change it.
-
-Good (rationale included):
-\`\`\`bash
-pebbl log "threshold is 0.5 because Professional Services touches every industry at
-0.2-0.4, which is too weak for meaningful knowledge transfer"
-\`\`\`
-The WHY is included. The future agent knows what problem this solves.
-
-Rule of thumb: if your entry reads like config documentation, you forgot the rationale.
-Use "because", "to prevent", "so that", or "the problem is" to connect mechanics to
-motivation. Entries that only list parameters (default, threshold, weight, score, blend,
-config, param, formula) with numbers get auto-tagged as detail tier — they will
-persist but are flagged as lower-authority than component/foundation entries with proper rationale.
-
-### What not to log
-- Routine code changes (git hook captures those)
-- Anything obvious from reading the code
+**Don't log:** routine code changes (the git hook captures commits), or anything obvious from reading the code.
+${AGENT_END}
 `;
 
 const AGENT_STANDALONE = `# Agent Guidelines\n${AGENT_SECTION}`;
-
 
 const HOOK_SCRIPT = `#!/bin/sh
 HASH=$(git log -1 --pretty=%H)
@@ -188,18 +98,20 @@ function init() {
     console.log('Created .gitignore with .pebbl/');
   }
 
-  // AGENTS.md — create or append, never overwrite
+  // AGENTS.md — create or append, never overwrite user content outside the sentinels
   const agentMd = path.join(cwd, 'AGENTS.md');
   if (!fs.existsSync(agentMd)) {
     fs.writeFileSync(agentMd, AGENT_STANDALONE);
     console.log('Created AGENTS.md with pebbl guidance');
   } else {
     const existing = fs.readFileSync(agentMd, 'utf8');
-    if (!existing.includes('Pebbl — Project Memory Protocol')) {
+    const hasNewBlock = existing.includes(AGENT_BEGIN);
+    const hasOldBlock = existing.includes('Pebbl — Project Memory Protocol');
+    if (!hasNewBlock && !hasOldBlock) {
       fs.appendFileSync(agentMd, AGENT_SECTION);
       console.log('Appended pebbl guidance to existing AGENTS.md');
     } else {
-      console.log('AGENTS.md already contains pebbl guidance — skipping');
+      console.log('AGENTS.md already contains pebbl guidance — run `pebbl upgrade` to refresh');
     }
   }
 
@@ -233,3 +145,5 @@ function init() {
 
 module.exports = init;
 module.exports.AGENT_SECTION = AGENT_SECTION;
+module.exports.AGENT_BEGIN = AGENT_BEGIN;
+module.exports.AGENT_END = AGENT_END;
