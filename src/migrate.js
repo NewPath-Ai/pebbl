@@ -53,9 +53,11 @@ function migrate(db) {
   }
   if (version < 0.4) {
     const columns = db.prepare('PRAGMA table_info(handoffs)').all();
-    const colNames = new Set(columns.map(c => c.name));
-    if (!colNames.has('docs')) {
-      db.exec('ALTER TABLE handoffs ADD COLUMN docs TEXT');
+    if (columns.length > 0) {
+      const colNames = new Set(columns.map(c => c.name));
+      if (!colNames.has('docs')) {
+        db.exec('ALTER TABLE handoffs ADD COLUMN docs TEXT');
+      }
     }
     setVersion(db, 0.4);
     console.error('pebbl: migrated db to v0.4 (handoffs.docs)');
