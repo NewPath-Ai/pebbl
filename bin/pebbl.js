@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 'use strict';
 
+const help = require('../src/help');
+
 const [,, command, ...args] = process.argv;
+
+const wantsHelp = (a) => a.includes('--help') || a.includes('-h');
 
 const commands = {
   init:         () => require('../src/init')(),
@@ -17,53 +21,28 @@ const commands = {
   'log-commit': () => require('../src/log-commit')(args[0], args[1], args[2]),
 };
 
-if (!command || !(command in commands)) {
-  console.log(`pebbl — local project memory
+if (!command || command === '--help' || command === '-h') {
+  help.printToplevel();
+  process.exit(0);
+}
 
-Usage:
-  pebbl init                  Set up .pebbl/ in current project
-  pebbl log "[message]"       Record a decision or note
-    --cat <category>          decision|structure|pattern|data|integration|quality
-    --topic <topic>           Free-form topic (e.g. "auth,api")
-    --tier <tier>             foundation|component|detail|fleeting
-    --source <source>         human|agent|hook (default: human)
-    --relates <id>            Related entry ID
-    --corrects <id>           Entry this corrects
+if (command === 'help') {
+  if (!args[0]) { help.printToplevel(); process.exit(0); }
+  if (args[0] in commands) { help.printSubcommand(args[0]); process.exit(0); }
+  help.printTopic(args[0]);
+  process.exit(0);
+}
 
-    Examples:
-      pebbl log "threshold is 0.5 because Professional Services touches everything at 0.2"
-      pebbl log "threshold is 0.5, weight is 0.6"   ← missing why, will warn
+if (wantsHelp(args)) {
+  if (command in commands) { help.printSubcommand(command); process.exit(0); }
+  help.printToplevel();
+  process.exit(0);
+}
 
-  pebbl search "[query]"      Semantic + keyword search over memory
-    --cat <category>          Filter by category
-    --topic <topic>           Filter by topic
-  pebbl context               Recent entries with rationale warnings & git context
-    --cat <category>          Filter by category
-    --topic <topic>           Filter by topic
-  pebbl handoff "[summary]"   Create a session handoff for the next agent
-    --done <items>            Semicolon-separated completed items
-    --todo <items>            Semicolon-separated remaining items
-    --blocked <items>         Semicolon-separated blockers
-    --topic <topic>           Free-form topic (e.g. "auth,api")
-    --source <source>         human|agent (default: agent)
-    --latest                  Show the most recent handoff
-    --list                    List recent handoffs
-    --close                   Close the open handoff (promotes to foundation-tier log)
-  pebbl narrative             View or set the project narrative
-  pebbl narrative "..."       Set the narrative description
-    --show                    Show the current narrative
-    --generate                Guide on writing a narrative from foundation entries
-  pebbl compact               Compact entries on a topic
-    --preview                 Show groups ready for compaction
-    --execute                 Execute compaction
-    --resolve <id:action,...> Resolve ambiguous entries
-  pebbl feedback "[message]"  Drop feedback about pebbl when it misbehaves here
-    --list                    Review feedback recorded in this repo
-  pebbl upgrade               Update .pebbl/ to the latest version
-  pebbl eject                 Remove pebbl config from this project
-  pebbl log-commit            (called by git post-commit hook)
-`);
-  process.exit(command ? 1 : 0);
+if (!(command in commands)) {
+  console.error(`pebbl: unknown command '${command}'\n`);
+  help.printToplevel();
+  process.exit(1);
 }
 
 commands[command]();
