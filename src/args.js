@@ -7,7 +7,9 @@ const KNOWN_FLAGS = new Set([
   'show', 'generate',
 ]);
 
-const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'show', 'generate']);
+const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'show', 'generate']);
+// Flags that are boolean by default but can accept an optional value when followed by a non-flag arg.
+const OPTIONAL_VALUE_FLAGS = new Set(['close']);
 
 function parseArgs(args) {
   const flags = {};
@@ -26,6 +28,17 @@ function parseArgs(args) {
 
       if (BOOLEAN_FLAGS.has(key)) {
         flags[key] = true;
+        continue;
+      }
+
+      if (OPTIONAL_VALUE_FLAGS.has(key)) {
+        const next = args[i + 1];
+        if (next !== undefined && !next.startsWith('--')) {
+          flags[key] = next;
+          i++;
+        } else {
+          flags[key] = true;
+        }
         continue;
       }
 

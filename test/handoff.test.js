@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 const Database = require('better-sqlite3');
 const { splitItems, checkFieldQuality, materializeHandoffsMd, reconcileHandoffsMd } = require('../src/handoff');
+const { parseArgs } = require('../src/args');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-test-'));
@@ -682,5 +683,118 @@ describe('handoff - reconcile (regression #13)', () => {
 
     const rows = db.prepare('SELECT id FROM handoffs ORDER BY id').all();
     assert.strictEqual(rows.length, 2, 'DB should have both handoffs after materialize');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests for --close <id> (close-by-id feature)
+// ---------------------------------------------------------------------------
+
+describe('handoff - close by id', () => {
+  let dir, db;
+
+  after(() => {
+    if (db) db.close();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('parseArgs: bare --close sets flags.close = true', () => {
+    const { flags } = parseArgs(['--close']);
+    assert.strictEqual(flags.close, true);
+  });
+
+  it('parseArgs: --close 3 sets flags.close = "3"', () => {
+    const { flags } = parseArgs(['--close', '3']);
+    assert.strictEqual(flags.close, '3');
+  });
+
+  it('parseArgs: --close followed by another flag sets flags.close = true', () => {
+    const { flags } = parseArgs(['--close', '--list']);
+    assert.strictEqual(flags.close, true);
+    assert.strictEqual(flags.list, true);
+  });
+
+  it('close-by-id closes the targeted handoff and leaves others open', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    const insert = db.prepare(
+      'INSERT INTO handoffs (timestamp, summary, status) VALUES (?, ?, ?)'
+    );
+    insert.run('2026-05-23T10:00:00.000Z', 'handoff one', 'open');
+    insert.run('2026-05-24T10:00:00.000Z', 'handoff two', 'open');
+    insert.run('2026-05-25T10:00:00.000Z', 'handoff three', 'open');
+
+    // Close handoff #1 specifically (not the newest)
+    const targetId = 1;
+    const row = db.prepare('SELECT * FROM handoffs WHERE id = ?').get(targetId);
+    assert(row, 'target row must exist');
+    assert.strictEqual(row.status, 'open', 'target must be open before close');
+
+    const ts = new Date().toISOString();
+    db.prepare(
+      "UPDATE handoffs SET status = 'closed', closed_at = ? WHERE id = ?"
+    ).run(ts, targetId);
+
+    materializeHandoffsMd(dir, db);
+
+    const h1 = db.prepare('SELECT * FROM handoffs WHERE id = 1').get();
+    const h2 = db.prepare('SELECT * FROM handoffs WHERE id = 2').get();
+    const h3 = db.prepare('SELECT * FROM handoffs WHERE id = 3').get();
+
+    assert.strictEqual(h1.status, 'closed', 'handoff #1 should be closed');
+    assert.strictEqual(h2.status, 'open',   'handoff #2 should remain open');
+    assert.strictEqual(h3.status, 'open',   'handoff #3 (newest) should remain open');
+  });
+
+  it('close-by-id: non-existent id — query returns undefined', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    db.prepare('INSERT INTO handoffs (timestamp, summary, status) VALUES (?, ?, ?)')
+      .run('2026-05-25T10:00:00.000Z', 'only handoff', 'open');
+
+    const row = db.prepare('SELECT * FROM handoffs WHERE id = ?').get(9999);
+    assert.strictEqual(row, undefined, 'non-existent id must return undefined');
+  });
+
+  it('close-by-id: already-closed id — status is already closed', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    db.prepare('INSERT INTO handoffs (timestamp, summary, status, closed_at) VALUES (?, ?, ?, ?)')
+      .run('2026-05-25T10:00:00.000Z', 'already done', 'closed', '2026-05-25T18:00:00.000Z');
+
+    const row = db.prepare('SELECT * FROM handoffs WHERE id = ?').get(1);
+    assert(row, 'row must exist');
+    assert.strictEqual(row.status, 'closed', 'row is already closed — error path applies');
+  });
+
+  it('bare --close still closes the highest open handoff', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    const insert = db.prepare(
+      'INSERT INTO handoffs (timestamp, summary, status) VALUES (?, ?, ?)'
+    );
+    insert.run('2026-05-23T10:00:00.000Z', 'older open', 'open');
+    insert.run('2026-05-25T10:00:00.000Z', 'newest open', 'open');
+
+    // Bare --close selects highest id open handoff
+    const row = db.prepare(
+      "SELECT * FROM handoffs WHERE status = 'open' ORDER BY id DESC LIMIT 1"
+    ).get();
+
+    assert(row, 'must find an open handoff');
+    assert.strictEqual(row.id, 2, 'must select the newest open handoff');
+    assert.strictEqual(row.summary, 'newest open');
+
+    const ts = new Date().toISOString();
+    db.prepare("UPDATE handoffs SET status = 'closed', closed_at = ? WHERE id = ?").run(ts, row.id);
+
+    const h1 = db.prepare('SELECT * FROM handoffs WHERE id = 1').get();
+    const h2 = db.prepare('SELECT * FROM handoffs WHERE id = 2').get();
+    assert.strictEqual(h1.status, 'open',   'older handoff remains open');
+    assert.strictEqual(h2.status, 'closed', 'newest handoff is now closed');
   });
 });

@@ -50,11 +50,32 @@ module.exports = function handoff(args) {
     return;
   }
 
-  // Mode 3: --close
+  // Mode 3: --close [id]
   if (flags.close) {
-    const row = db.prepare(
-      "SELECT * FROM handoffs WHERE status = 'open' ORDER BY id DESC LIMIT 1"
-    ).get();
+    let row;
+    if (flags.close !== true) {
+      // Close a specific handoff by id
+      const targetId = parseInt(flags.close, 10);
+      if (isNaN(targetId)) {
+        console.error(`pebbl: --close id must be a number (got '${flags.close}')`);
+        process.exit(1);
+      }
+      const candidate = db.prepare('SELECT * FROM handoffs WHERE id = ?').get(targetId);
+      if (!candidate) {
+        console.error(`pebbl: handoff #${targetId} does not exist`);
+        process.exit(1);
+      }
+      if (candidate.status === 'closed') {
+        console.error(`pebbl: handoff #${targetId} is already closed`);
+        process.exit(1);
+      }
+      row = candidate;
+    } else {
+      // Bare --close: close the highest open handoff (existing behavior)
+      row = db.prepare(
+        "SELECT * FROM handoffs WHERE status = 'open' ORDER BY id DESC LIMIT 1"
+      ).get();
+    }
 
     if (!row) {
       console.error('pebbl: no open handoff to close');

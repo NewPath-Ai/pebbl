@@ -117,7 +117,7 @@ Flags:
   --source <source>    human|agent (default: agent)
   --latest             show the most recent handoff
   --list               list recent handoffs
-  --close              close the open handoff (promotes to foundation-tier log)
+  --close [id]         close the open handoff; with id, close that specific handoff
 
 Handoffs materialize one block per --done/--todo/--blocked item into
 handoffs.md so each item is independently searchable.
