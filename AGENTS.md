@@ -6,7 +6,7 @@ context in SQLite under `.pebbl/`. Entry point: `bin/pebbl.js`.
 ## Commands
 
 ```bash
-node --test test/                    # full suite
+npm test                             # full suite
 node --test test/search.test.js      # one file
 node bin/pebbl.js <subcommand>       # run the CLI from source
 pebbl --help                         # subcommand reference
