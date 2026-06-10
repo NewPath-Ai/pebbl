@@ -17,6 +17,8 @@ module.exports = function handoff(args) {
 
   // Mode 1: --latest
   if (flags.latest) {
+    // Reconcile before reading so any file-only rows are visible.
+    reconcileHandoffsMd(pebblDir, db);
     const row = db.prepare('SELECT * FROM handoffs ORDER BY id DESC LIMIT 1').get();
     if (!row) {
       console.log('pebbl: no handoffs found');
@@ -28,8 +30,10 @@ module.exports = function handoff(args) {
 
   // Mode 2: --list
   if (flags.list) {
+    // Reconcile before reading so any file-only rows are visible.
+    reconcileHandoffsMd(pebblDir, db);
     const rows = db.prepare(
-      'SELECT id, timestamp, summary, topics, status FROM handoffs ORDER BY id DESC LIMIT 10'
+      'SELECT id, timestamp, summary, topics, status FROM handoffs ORDER BY id DESC LIMIT 20'
     ).all();
 
     if (rows.length === 0) {
@@ -176,12 +180,116 @@ function checkFieldQuality(field, name) {
   }
 }
 
+// Parse handoffs.md and reconcile the DB against it before materializing.
+// Any handoff ID that appears in the file as a summary block but is absent from
+// the DB is inserted so a subsequent materialize doesn't silently drop it.
+// Any existing row whose status in the file is 'closed' but is 'open' in the DB
+// is also updated — the file is the human-visible record and its status wins when
+// the two disagree (this handles the case where an agent manually wrote a close).
+//
+// The function is called at the top of materializeHandoffsMd so all write paths
+// (create, close, --close) automatically heal any prior drift.
+function reconcileHandoffsMd(pebblDir, db) {
+  const mdPath = require('path').join(pebblDir, 'handoffs.md');
+  if (!fs.existsSync(mdPath)) return;
+
+  const text = fs.readFileSync(mdPath, 'utf8');
+  const lines = text.split('\n');
+
+  // Collect per-ID: { id, timestamp, status, summary, done:[], todo:[], blocked:[], topics }
+  // We only need to import the summary row (one per ID). We accumulate done/todo/blocked items.
+  const byId = new Map();
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Look for comment tags: <!-- handoff:N field:F topic:T status:S -->
+    const tagMatch = line.match(/<!--\s*handoff:(\d+)\s+field:(\w+)\s+topic:(.*?)\s+status:(open|closed)\s*-->/);
+    if (!tagMatch) continue;
+
+    const id = parseInt(tagMatch[1], 10);
+    const field = tagMatch[2];
+    const topics = tagMatch[3].trim();
+    const status = tagMatch[4];
+
+    if (!byId.has(id)) {
+      byId.set(id, { id, timestamp: null, status, summary: null, done: [], todo: [], blocked: [], topics });
+    }
+    const entry = byId.get(id);
+    // Last-seen status wins (consistent across all blocks for a given ID in practice)
+    entry.status = status;
+    if (topics) entry.topics = topics;
+
+    // The heading line is the line just above the comment
+    const heading = i > 0 ? lines[i - 1] : '';
+    // ## <timestamp> - handoff #N: <summary>
+    // ## <timestamp> - handoff #N done: <item>
+    // ## <timestamp> - handoff #N todo: <item>
+    // ## <timestamp> - handoff #N blocked: <item>
+    const headMatch = heading.match(/^##\s+(\S+)\s+-\s+(.+)$/);
+    if (!headMatch) continue;
+
+    const ts = headMatch[1];
+    const body = headMatch[2];
+
+    if (field === 'summary') {
+      entry.timestamp = ts;
+      // "handoff #N: <summary text>"
+      const sumMatch = body.match(/^handoff #\d+:\s+(.+)$/);
+      if (sumMatch) entry.summary = sumMatch[1];
+    } else if (field === 'done') {
+      const itemMatch = body.match(/^handoff #\d+ done:\s+(.+)$/);
+      if (itemMatch) entry.done.push(itemMatch[1]);
+    } else if (field === 'todo') {
+      const itemMatch = body.match(/^handoff #\d+ todo:\s+(.+)$/);
+      if (itemMatch) entry.todo.push(itemMatch[1]);
+    } else if (field === 'blocked') {
+      const itemMatch = body.match(/^handoff #\d+ blocked:\s+(.+)$/);
+      if (itemMatch) entry.blocked.push(itemMatch[1]);
+    }
+  }
+
+  if (byId.size === 0) return;
+
+  // Build a set of IDs already in the DB
+  const dbIds = new Set(
+    db.prepare('SELECT id FROM handoffs').all().map(r => r.id)
+  );
+
+  const insertStmt = db.prepare(`
+    INSERT INTO handoffs (id, timestamp, summary, done, todo, blocked, topics, source, session_entries, session_commits, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'agent', '[]', '[]', ?)
+  `);
+
+  const closeStmt = db.prepare(
+    "UPDATE handoffs SET status = 'closed', closed_at = ? WHERE id = ? AND status = 'open'"
+  );
+
+  for (const [id, entry] of byId) {
+    if (!dbIds.has(id)) {
+      // Missing from DB entirely — insert it. Skip rows with no summary (parse failure).
+      if (!entry.summary || !entry.timestamp) continue;
+      const done = entry.done.length > 0 ? entry.done.join('; ') : null;
+      const todo = entry.todo.length > 0 ? entry.todo.join('; ') : null;
+      const blocked = entry.blocked.length > 0 ? entry.blocked.join('; ') : null;
+      insertStmt.run(id, entry.timestamp, entry.summary, done, todo, blocked, entry.topics || null, entry.status);
+    } else if (entry.status === 'closed') {
+      // In DB but file says closed — sync the status
+      closeStmt.run(entry.timestamp || new Date().toISOString(), id);
+    }
+  }
+}
+
 // Regenerate handoffs.md from the handoffs table. Both open and closed handoffs
 // are included so search finds in-progress work too (open ones carry a
 // status:open tag so callers can render them differently). Each handoff becomes
 // a summary block plus one block per ';'-split done/todo/blocked item. Overwrites
 // the file every time (idempotent) — the table is the authority.
+//
+// Calls reconcileHandoffsMd first so any rows that were written directly into the
+// file (bypassing the DB) are imported before we overwrite the file.
 function materializeHandoffsMd(pebblDir, db) {
+  reconcileHandoffsMd(pebblDir, db);
+
   const rows = db.prepare(
     "SELECT * FROM handoffs ORDER BY id ASC"
   ).all();
@@ -285,3 +393,4 @@ module.exports.displayHandoff = displayHandoff;
 module.exports.splitItems = splitItems;
 module.exports.checkFieldQuality = checkFieldQuality;
 module.exports.materializeHandoffsMd = materializeHandoffsMd;
+module.exports.reconcileHandoffsMd = reconcileHandoffsMd;

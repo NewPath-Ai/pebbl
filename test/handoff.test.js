@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const Database = require('better-sqlite3');
-const { splitItems, checkFieldQuality, materializeHandoffsMd } = require('../src/handoff');
+const { splitItems, checkFieldQuality, materializeHandoffsMd, reconcileHandoffsMd } = require('../src/handoff');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-test-'));
@@ -481,5 +481,206 @@ describe('handoff - docs', () => {
 
     const row = db.prepare('SELECT * FROM handoffs WHERE id = 1').get();
     assert.strictEqual(row.docs, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression tests for handoff --list / reconcileHandoffsMd (backlog #13)
+// ---------------------------------------------------------------------------
+
+describe('handoff - reconcile (regression #13)', () => {
+  let dir, db;
+
+  after(() => {
+    if (db) db.close();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Helper: write a handoffs.md file directly (simulating an agent that bypassed pebbl)
+  function writeHandoffsMd(dir, content) {
+    fs.writeFileSync(path.join(dir, 'handoffs.md'), content);
+  }
+
+  it('imports a handoff that is in the file but absent from the DB', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    // Only handoff #1 in DB
+    db.prepare("INSERT INTO handoffs (timestamp, summary, status) VALUES (?,?,?)")
+      .run('2026-05-25T10:00:00.000Z', 'first handoff', 'closed');
+
+    // handoffs.md was hand-written with #1 AND an extra #3 that skipped #2
+    writeHandoffsMd(dir, [
+      '# Handoffs',
+      '',
+      '## 2026-05-25T10:00:00.000Z - handoff #1: first handoff',
+      '<!-- handoff:1 field:summary topic:auth status:closed -->',
+      '',
+      '## 2026-06-10T05:00:00.000Z - handoff #3: orphan handoff from agent',
+      '<!-- handoff:3 field:summary topic:api status:closed -->',
+      '',
+      '## 2026-06-10T05:00:00.000Z - handoff #3 done: wired the endpoint',
+      '<!-- handoff:3 field:done topic:api status:closed -->',
+      '',
+      '## 2026-06-10T05:00:00.000Z - handoff #3 todo: add integration test',
+      '<!-- handoff:3 field:todo topic:api status:closed -->',
+      '',
+    ].join('\n'));
+
+    reconcileHandoffsMd(dir, db);
+
+    const rows = db.prepare('SELECT id, status, summary, done, todo FROM handoffs ORDER BY id').all();
+    assert.strictEqual(rows.length, 2, 'should have imported the orphaned handoff');
+    assert.strictEqual(rows[1].id, 3);
+    assert.strictEqual(rows[1].status, 'closed');
+    assert.strictEqual(rows[1].summary, 'orphan handoff from agent');
+    assert.strictEqual(rows[1].done, 'wired the endpoint');
+    assert.strictEqual(rows[1].todo, 'add integration test');
+  });
+
+  it('syncs open→closed for a row where the file says closed', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    // DB says #1 is open
+    db.prepare("INSERT INTO handoffs (timestamp, summary, status) VALUES (?,?,?)")
+      .run('2026-06-10T04:56:00.000Z', 'gate test needs fresh render', 'open');
+
+    // File says it is closed (agent closed it manually)
+    writeHandoffsMd(dir, [
+      '# Handoffs',
+      '',
+      '## 2026-06-10T04:56:00.000Z - handoff #1: gate test needs fresh render',
+      '<!-- handoff:1 field:summary topic:clipforge status:closed -->',
+      '',
+    ].join('\n'));
+
+    reconcileHandoffsMd(dir, db);
+
+    const row = db.prepare('SELECT * FROM handoffs WHERE id = 1').get();
+    assert.strictEqual(row.status, 'closed', 'status should be synced from file to DB');
+  });
+
+  it('does not overwrite a closed row with open when file says open', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    // DB says #1 is already closed
+    db.prepare("INSERT INTO handoffs (timestamp, summary, status, closed_at) VALUES (?,?,?,?)")
+      .run('2026-05-25T10:00:00.000Z', 'real closed handoff', 'closed', '2026-05-25T18:00:00.000Z');
+
+    // File somehow says open (should not reopen a closed handoff)
+    writeHandoffsMd(dir, [
+      '# Handoffs',
+      '',
+      '## 2026-05-25T10:00:00.000Z - handoff #1: real closed handoff',
+      '<!-- handoff:1 field:summary topic:auth status:open -->',
+      '',
+    ].join('\n'));
+
+    reconcileHandoffsMd(dir, db);
+
+    const row = db.prepare('SELECT * FROM handoffs WHERE id = 1').get();
+    assert.strictEqual(row.status, 'closed', 'reconcile must not reopen a closed handoff');
+  });
+
+  it('preserves midnight timestamps imported from the file as-is', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    // File has a handoff with a midnight timestamp (date-string artifact)
+    writeHandoffsMd(dir, [
+      '# Handoffs',
+      '',
+      '## 2026-06-10T00:00:00.000Z - handoff #1: gate test passed',
+      '<!-- handoff:1 field:summary topic:pipeline status:closed -->',
+      '',
+    ].join('\n'));
+
+    reconcileHandoffsMd(dir, db);
+
+    const row = db.prepare('SELECT * FROM handoffs WHERE id = 1').get();
+    assert(row, 'row should have been inserted');
+    // Timestamp is preserved exactly — we don't second-guess historical records
+    assert.strictEqual(row.timestamp, '2026-06-10T00:00:00.000Z');
+  });
+
+  it('is idempotent — running twice produces the same DB state', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    db.prepare("INSERT INTO handoffs (timestamp, summary, status) VALUES (?,?,?)")
+      .run('2026-05-25T10:00:00.000Z', 'first handoff', 'open');
+
+    writeHandoffsMd(dir, [
+      '# Handoffs',
+      '',
+      '## 2026-05-25T10:00:00.000Z - handoff #1: first handoff',
+      '<!-- handoff:1 field:summary topic: status:open -->',
+      '',
+      '## 2026-06-10T05:00:00.000Z - handoff #2: second handoff',
+      '<!-- handoff:2 field:summary topic:api status:closed -->',
+      '',
+    ].join('\n'));
+
+    reconcileHandoffsMd(dir, db);
+    const afterFirst = db.prepare('SELECT id, status FROM handoffs ORDER BY id').all();
+
+    reconcileHandoffsMd(dir, db);
+    const afterSecond = db.prepare('SELECT id, status FROM handoffs ORDER BY id').all();
+
+    assert.deepStrictEqual(afterFirst, afterSecond, 'second reconcile should not change anything');
+  });
+
+  it('--list returns more than 10 rows when more than 10 handoffs exist', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    // Insert 14 handoffs
+    const insert = db.prepare(
+      'INSERT INTO handoffs (timestamp, summary, status) VALUES (?, ?, ?)'
+    );
+    for (let i = 1; i <= 14; i++) {
+      insert.run(`2026-05-${String(i).padStart(2, '0')}T10:00:00.000Z`, `handoff ${i}`, 'closed');
+    }
+
+    // The list query must return all 14 (up to LIMIT 20)
+    const rows = db.prepare(
+      'SELECT id, timestamp, summary, topics, status FROM handoffs ORDER BY id DESC LIMIT 20'
+    ).all();
+
+    assert.strictEqual(rows.length, 14, 'list must show all 14 handoffs, not cap at 10');
+    assert.strictEqual(rows[0].id, 14, 'most recent first');
+    assert.strictEqual(rows[13].id, 1, 'oldest last');
+  });
+
+  it('materializeHandoffsMd runs reconcile first so file-only rows are not lost', () => {
+    dir = tmpDir();
+    db = setupDb(dir);
+
+    // DB has only #1
+    db.prepare("INSERT INTO handoffs (timestamp, summary, status) VALUES (?,?,?)")
+      .run('2026-05-25T10:00:00.000Z', 'original handoff', 'open');
+
+    // File has #1 and an orphaned #2
+    writeHandoffsMd(dir, [
+      '# Handoffs',
+      '',
+      '## 2026-05-25T10:00:00.000Z - handoff #1: original handoff',
+      '<!-- handoff:1 field:summary topic: status:open -->',
+      '',
+      '## 2026-06-01T09:00:00.000Z - handoff #2: orphaned handoff',
+      '<!-- handoff:2 field:summary topic:feature status:open -->',
+      '',
+    ].join('\n'));
+
+    // materializeHandoffsMd should import #2 before overwriting the file
+    materializeHandoffsMd(dir, db);
+
+    const md = fs.readFileSync(path.join(dir, 'handoffs.md'), 'utf8');
+    assert.match(md, /handoff #2: orphaned handoff/, 'materialized file must include the reconciled row');
+
+    const rows = db.prepare('SELECT id FROM handoffs ORDER BY id').all();
+    assert.strictEqual(rows.length, 2, 'DB should have both handoffs after materialize');
   });
 });
