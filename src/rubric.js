@@ -144,6 +144,12 @@ rules:
 const DEFAULT_CONFIG = `compaction:
   threshold: 10
   fleeting_retention: 30
+
+posture:
+  maturity: prototype
+  security: relaxed
+  test_expectation: smoke
+  notes: ""
 `;
 
 function migrateRubric(pebblDir) {

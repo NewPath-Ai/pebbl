@@ -7,6 +7,7 @@ const { openDb, topicFilter } = require('./db');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { displayEntry } = require('./log');
 const { isThinEntry } = require('./detect-thin');
+const { readPosture, formatPosture } = require('./posture');
 const { readNarrative, readRefs, readUpdatedTimestamp, updateRefs } = require('./narrative');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -197,6 +198,16 @@ function contextDefault(pebblDir, db) {
   const cwd = process.cwd();
 
   showOpenHandoff(db);
+
+  // ── POSTURE ──
+
+  const posture = readPosture(pebblDir);
+  if (posture && (posture.maturity || posture.security || posture.test_expectation)) {
+    console.log('--- POSTURE ---');
+    console.log(formatPosture(posture));
+    console.log('---');
+    console.log('');
+  }
 
   // ── Section 1: NARRATIVE ──
 

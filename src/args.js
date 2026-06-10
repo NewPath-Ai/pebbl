@@ -5,9 +5,13 @@ const KNOWN_FLAGS = new Set([
   'relates', 'corrects', 'preview', 'execute', 'resolve',
   'done', 'todo', 'blocked', 'docs', 'latest', 'list', 'close',
   'show', 'generate',
+  'set', 'qa', 'spec', 'constraints', 'current', 'approve',
 ]);
 
-const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'show', 'generate']);
+const BOOLEAN_FLAGS = new Set([
+  'preview', 'execute', 'latest', 'list', 'close', 'show', 'generate',
+  'current', 'approve',
+]);
 
 function parseArgs(args) {
   const flags = {};

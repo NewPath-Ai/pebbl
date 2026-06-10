@@ -17,6 +17,8 @@ const commands = {
   eject:        () => require('../src/eject')(),
   handoff:      () => require('../src/handoff')(args),
   narrative:    () => require('../src/narrative')(args),
+  posture:      () => require('../src/posture')(args),
+  intent:       () => require('../src/intent')(args),
   feedback:     () => require('../src/feedback')(args),
   'log-commit': () => require('../src/log-commit')(args[0], args[1], args[2]),
 };

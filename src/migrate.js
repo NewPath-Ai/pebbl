@@ -62,6 +62,25 @@ function migrate(db) {
     setVersion(db, 0.4);
     console.error('pebbl: migrated db to v0.4 (handoffs.docs)');
   }
+  if (version < 0.5) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS intents (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp         TEXT NOT NULL,
+        topic             TEXT,
+        status            TEXT NOT NULL DEFAULT 'draft',
+        goal              TEXT NOT NULL,
+        constraints       TEXT,
+        posture_snapshot  TEXT,
+        qa_pairs          TEXT,
+        spec              TEXT,
+        linked_handoff_id INTEGER,
+        source            TEXT NOT NULL DEFAULT 'human'
+      )
+    `);
+    setVersion(db, 0.5);
+    console.error('pebbl: migrated db to v0.5 (intents table)');
+  }
 }
 
 module.exports = { migrate, getVersion };
