@@ -228,7 +228,7 @@ describe('ensureProjectFiles — rubric migration', () => {
     assert(content.includes('^\\[session\\]'), 'anchored pattern preserved');
   });
 
-  it('leaves rubrics without [session] pattern untouched', () => {
+  it('does not anchor-migrate rubrics without [session] pattern, but adds trace rule', () => {
     const original = `rules:
   - pattern: "chose|decided"
     category: decision
@@ -237,6 +237,8 @@ describe('ensureProjectFiles — rubric migration', () => {
     fs.writeFileSync(path.join(tmpDir, 'rubric.yml'), original);
     ensureProjectFiles(tmpDir);
     const content = fs.readFileSync(path.join(tmpDir, 'rubric.yml'), 'utf8');
-    assert.strictEqual(content, original);
+    assert(!content.includes('^^'), 'should not add double-anchor');
+    assert(content.includes('^trace:'), 'trace rule should be added');
+    assert(content.includes('chose|decided'), 'existing rules should be preserved');
   });
 });

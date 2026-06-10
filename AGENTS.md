@@ -52,6 +52,29 @@ node bin/pebbl.js search "<area you're touching>"
 Log decisions and failed approaches as you go. See [PEBBL.md](PEBBL.md)
 for `--cat` / `--topic` / `--tier` semantics — don't reinvent them here.
 
+## Traces
+
+Every workflow run ends with a trace. An agent failure that produces no trace and no workflow update is a wasted failure.
+
+At the start of any workflow run, search for prior traces:
+
+```bash
+node bin/pebbl.js search "trace <workflow-name>" --cat quality
+```
+
+At the end, log the outcome:
+
+```bash
+node bin/pebbl.js log "trace: <workflow> <succeeded|failed|partial> for <task> — path: <step>→<step>→<step>[; deviation: <what> because <why>][; failed-at: <step> because <why>; fix: <where fix landed>]" \
+  --cat quality --topic trace,<workflow> --source agent
+```
+
+Rules:
+- `--cat quality` and `--topic trace,<workflow>` are always required
+- Every `deviation` and `failed-at` clause needs `because` (or "to prevent", "so that") — no rationale, no value
+- `--corrects` is not valid on trace entries — traces are append-only history
+- One trace per run, logged at terminal state only (success, failure, or abandonment)
+
 ## Boundaries
 
 - Never modify `package-lock.json` by hand — let npm regenerate

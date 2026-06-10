@@ -108,6 +108,10 @@ rules:
     category: uncategorized
     tier: fleeting
 
+  - pattern: "^trace:"
+    category: quality
+    tier: detail
+
   - pattern: "chose|decided|decision|picked|went with|trade-?off|constraint|switched|replaced|changed to|adopted|rejected|dropped|reverted|migrated"
     category: decision
     tier: component
@@ -180,13 +184,24 @@ function migrateRubric(pebblDir) {
     console.error('pebbl: migrated rubric.yml (signal → component tier)');
   }
 
+  // v0.4: add ^trace: rule for auto-classification of success traces
+  let traceMigrated = false;
+  if (!content.includes('^trace:')) {
+    const sessionRuleEnd = content.indexOf('\n\n', content.indexOf('[session]'));
+    const insertAt = sessionRuleEnd !== -1 ? sessionRuleEnd : content.indexOf('rules:') + 'rules:'.length;
+    const traceRule = '\n\n  - pattern: "^trace:"\n    category: quality\n    tier: detail';
+    content = content.slice(0, insertAt) + traceRule + content.slice(insertAt);
+    traceMigrated = true;
+    console.error('pebbl: migrated rubric.yml (added ^trace: rule)');
+  }
+
   if (sessionMigrated) {
     console.error('pebbl: migrated rubric.yml (anchored [session] pattern)');
   }
   if (decisionMigrated) {
     console.error('pebbl: migrated rubric.yml (expanded decision keywords)');
   }
-  if (sessionMigrated || decisionMigrated || signalMigrated) {
+  if (sessionMigrated || decisionMigrated || signalMigrated || traceMigrated) {
     fs.writeFileSync(rubricPath, content);
   }
 }

@@ -142,11 +142,13 @@ describe('ensureProjectFiles', () => {
     assert(fs.existsSync(path.join(dir, 'config.yml')));
   });
 
-  it('does not overwrite existing rubric.yml', () => {
+  it('does not overwrite existing rubric.yml, but applies migrations', () => {
     dir = tmpDir();
     const custom = 'rules:\n  - pattern: "custom"\n    category: quality\n    tier: component\n';
     fs.writeFileSync(path.join(dir, 'rubric.yml'), custom);
     ensureProjectFiles(dir);
-    assert.strictEqual(fs.readFileSync(path.join(dir, 'rubric.yml'), 'utf8'), custom);
+    const content = fs.readFileSync(path.join(dir, 'rubric.yml'), 'utf8');
+    assert(content.includes('custom'), 'custom rules preserved');
+    assert(content.includes('^trace:'), 'trace rule migrated in');
   });
 });
