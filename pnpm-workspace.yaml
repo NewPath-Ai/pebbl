@@ -1,0 +1,6 @@
+allowBuilds:
+  better-sqlite3: true
+# Build-script allowlist (pnpm 11 default-denies dependency build scripts).
+# better-sqlite3 needs its native binding compiled; nothing else may run scripts.
+onlyBuiltDependencies:
+  - better-sqlite3
