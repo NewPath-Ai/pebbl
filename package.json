@@ -12,7 +12,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "packageManager": "pnpm@11.5.3"
 }
