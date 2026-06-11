@@ -1,3 +1,4 @@
 node_modules/
 *.log
 .pebbl/
+.DS_Store
