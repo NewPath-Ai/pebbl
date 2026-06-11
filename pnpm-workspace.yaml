@@ -1,5 +1,11 @@
 allowBuilds:
-  better-sqlite3: true
+  better-sqlite3: set this to true or false
+
+# Supply-chain cooldown: refuse dependency versions published <24h ago.
+# Poisoned releases are almost always detected and pulled within hours.
+# (Must live here — pnpm 11 ignores minimum-release-age in project .npmrc.)
+minimumReleaseAge: 1440
+
 # Build-script allowlist (pnpm 11 default-denies dependency build scripts).
 # better-sqlite3 needs its native binding compiled; nothing else may run scripts.
 onlyBuiltDependencies:

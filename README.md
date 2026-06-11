@@ -59,10 +59,10 @@ pnpm install
 pnpm approve-builds better-sqlite3   # one-time: compiles the sqlite binding
 ```
 
-`.npmrc` sets `minimum-release-age=1440`, so pnpm refuses any dependency
-version published less than 24h ago - poisoned releases are almost always
-detected and pulled within hours. Build scripts are denied by default;
-`pnpm-workspace.yaml` allowlists only `better-sqlite3` (native binding).
+`pnpm-workspace.yaml` sets `minimumReleaseAge: 1440`, so pnpm refuses any
+dependency version published less than 24h ago - poisoned releases are
+almost always detected and pulled within hours. Build scripts are denied
+by default; the same file allowlists only `better-sqlite3` (native binding).
 
 ### 1. Initialize pebbl in your project
 
