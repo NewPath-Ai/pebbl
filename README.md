@@ -17,7 +17,7 @@ Pebbl keeps this context in a **local SQLite database**, queryable by both human
 
 ### Entry categories
 
-Every note in pebbl falls into one of 6 categories:
+Every note in pebbl falls into one of 7 categories:
 
 | Category | Examples |
 |----------|----------|
@@ -27,6 +27,11 @@ Every note in pebbl falls into one of 6 categories:
 | **data** | Schema: users table has (id, email, created_at, tags); search returns top 5 matches |
 | **integration** | OAuth provider: Google, sign-in flow uses PKCE, tokens cached in localStorage |
 | **quality** | Search latency target: < 200ms; test coverage: > 80% |
+| **correction** | Branch parked after failing review 3x; hotfix for the regression in search ranking |
+
+`correction` records that something went wrong and what was learned; the
+`--corrects <id>` flag additionally links the entry that supersedes a prior
+one. Use either or both.
 
 ### Entry tiers
 
@@ -134,7 +139,7 @@ pebbl context               # Dump recent context for copy/paste
 ```
 
 Flag cheat sheet:
-- `--cat <decision|structure|pattern|data|integration|quality>` — what kind of entry
+- `--cat <decision|structure|pattern|data|integration|quality|correction>` — what kind of entry
 - `--topic <name>` — one or more topics (comma-separated: `--topic auth,api`)
 - `--tier <foundation|component|detail|fleeting>` — how long to keep it (default: detail)
 - `--scope foundation` — mark as project-level decision (auto-sets tier to foundation)

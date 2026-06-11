@@ -10,6 +10,7 @@ const { isThinEntry } = require('./detect-thin');
 
 const VALID_CATEGORIES = [
   'decision', 'structure', 'pattern', 'data', 'integration', 'quality',
+  'correction',
 ];
 
 const VALID_TIERS = ['foundation', 'component', 'detail', 'fleeting'];

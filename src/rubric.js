@@ -112,6 +112,10 @@ rules:
     category: quality
     tier: detail
 
+  - pattern: "parked|fail(ed)? (review|verdict|adversarial)|verdict: fail|regression|hotfix|incident|crashed|post-?mortem"
+    category: correction
+    tier: detail
+
   - pattern: "chose|decided|decision|picked|went with|trade-?off|constraint|switched|replaced|changed to|adopted|rejected|dropped|reverted|migrated"
     category: decision
     tier: component
