@@ -3,6 +3,24 @@
 Node.js CLI for local project memory. Stores decisions, handoffs, and commit
 context in SQLite under `.pebbl/`. Entry point: `bin/pebbl.js`.
 
+## Factory routing
+
+Factory pipeline agents (droplet or Mac deployment): skip this section —
+you are the factory.
+
+Interactive sessions: feature and fix work goes through the factory
+pipeline (queue → build → adversarial review → staging), never ad-hoc
+subagents that bypass review. Write a task prompt (contract in
+`~/Documents/sw-factory/FACTORY.md`), then
+`factory-queue pebbl <task-name> <prompt-file>`; the runner picks it up
+within 15 min and Telegram reports each stage. Don't also build it
+in-session. The droplet is the only deployment today; once the Mac
+deployment exists (FACTORY.md backlog F3), queue there by default.
+Fallback only when no deployment is reachable: one task, one
+`agent/<task>-local` branch off origin/staging, routed through review
+later via `pipeline.sh pebbl <task> <prompt> <branch>`. Small in-session
+edits with Ashley are fine; unreviewed builder subagents are not.
+
 ## Commands
 
 ```bash
