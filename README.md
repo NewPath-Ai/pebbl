@@ -54,6 +54,21 @@ pebbl search "caching strategy"            # returns cache pattern, performance 
 
 ## Quick start
 
+### 0. Install dependencies (pnpm)
+
+This repo pins pnpm via corepack and ships a supply-chain cooldown:
+
+```bash
+corepack enable && corepack prepare pnpm@11.5.3 --activate
+pnpm install
+pnpm approve-builds better-sqlite3   # one-time: compiles the sqlite binding
+```
+
+`pnpm-workspace.yaml` sets `minimumReleaseAge: 1440`, so pnpm refuses any
+dependency version published less than 24h ago - poisoned releases are
+almost always detected and pulled within hours. Build scripts are denied
+by default; the same file allowlists only `better-sqlite3` (native binding).
+
 ### 1. Initialize pebbl in your project
 
 ```bash
