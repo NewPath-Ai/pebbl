@@ -8,6 +8,7 @@ const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { displayEntry } = require('./log');
 const { isThinEntry } = require('./detect-thin');
 const { readNarrative, readRefs, readUpdatedTimestamp, updateRefs } = require('./narrative');
+const { mirrorMachines, mirrorLogs, mirrorHandoffs, stripHandoffPrefix } = require('./mirror');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -129,6 +130,31 @@ function showEntryWithThinCheck(row, cwd) {
     } else {
       console.log('  ⚠ no explicit rationale found — consider correcting with: pebbl log "because..." --corrects ' + row.id);
     }
+  }
+}
+
+// Other machines' synced memory (.pebbl/mirror/<machine>/). Prints nothing
+// when no mirrors exist, so output is unchanged until the sync jobs create
+// them. Read-only: mirrors regenerate from the other machine's db.
+function showMirrors(pebblDir) {
+  for (const machine of mirrorMachines(pebblDir)) {
+    const opens = mirrorHandoffs(pebblDir, machine)
+      .filter(h => h.status === 'open' && h.field === 'summary')
+      .slice(0, 3);
+    const logs = mirrorLogs(pebblDir, machine).slice(0, 5);
+    if (opens.length === 0 && logs.length === 0) continue;
+
+    console.log(`--- MIRROR: ${machine} ---`);
+    for (const h of opens) {
+      console.log(`  open handoff: ${stripHandoffPrefix(h.message)}`);
+    }
+    for (const e of logs) {
+      console.log('  ' + displayEntry({
+        tier: e.tier, category: e.cat, timestamp: e.timestamp,
+        message: e.message, topics: e.topics,
+      }));
+    }
+    console.log('');
   }
 }
 
@@ -306,6 +332,8 @@ function contextDefault(pebblDir, db) {
   console.log('');
 
   showRecentHandoffs(db);
+
+  showMirrors(pebblDir);
 
   showCompactionNotifications(db, pebblDir);
 }

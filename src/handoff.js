@@ -7,6 +7,7 @@ const { openDb } = require('./db');
 const { qmdUpdate } = require('./qmd');
 const { ensureProjectFiles } = require('./rubric');
 const { displayEntry } = require('./log');
+const { mirrorHandoffs, stripHandoffPrefix } = require('./mirror');
 
 module.exports = function handoff(args) {
   const { flags, positional } = parseArgs(args);
@@ -32,7 +33,14 @@ module.exports = function handoff(args) {
       'SELECT id, timestamp, summary, topics, status FROM handoffs ORDER BY id DESC LIMIT 10'
     ).all();
 
-    if (rows.length === 0) {
+    // Other machines' handoffs from .pebbl/mirror/<machine>/ — one line per
+    // handoff (the summary block), tagged with the machine. Empty until the
+    // sync jobs create mirrors, so output is unchanged before then.
+    const mirrored = mirrorHandoffs(pebblDir)
+      .filter(h => h.field === 'summary')
+      .slice(0, 10);
+
+    if (rows.length === 0 && mirrored.length === 0) {
       console.log('pebbl: no handoffs found');
       return;
     }
@@ -42,6 +50,10 @@ module.exports = function handoff(args) {
       const tag = row.status === 'open' ? 'open' : 'closed';
       const topicStr = row.topics ? ` (${row.topics})` : '';
       console.log(`#${row.id} [${tag}]  ${date} — ${row.summary}${topicStr}`);
+    }
+    for (const h of mirrored) {
+      const topicStr = h.topics ? ` (${h.topics})` : '';
+      console.log(`[${h.machine}] #${h.handoffId} [${h.status}]  ${h.date} — ${stripHandoffPrefix(h.message)}${topicStr}`);
     }
     return;
   }

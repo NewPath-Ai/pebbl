@@ -51,6 +51,9 @@ Rules:
   narrative.md       project narrative
   archive/           compacted entries
   qmd/               quote-aware full-text index
+  mirror/<machine>/  other machines' synced memory (read-only — the sync job
+                     owns it; context, search, and handoff --list show these
+                     entries tagged [machine])
 
 db.sqlite is the source of truth. The .md files are projections — regenerable,
 safe to delete (they'll re-materialize on the next pebbl write).`,
