@@ -101,7 +101,7 @@ Then reload your shell (`source ~/.zshrc`) and confirm:
 pebbl help
 ```
 
-### 3. Initialize pebbl in your project
+### 2. Initialize pebbl in your project
 
 ```bash
 pebbl init
@@ -115,7 +115,7 @@ This creates `.pebbl/` with:
 
 Commit `.pebbl/` (but not the markdown projections — they're cached).
 
-### 4. Log decisions as you work
+### 3. Log decisions as you work
 
 ```bash
 # During development, capture architectural choices:
@@ -131,7 +131,7 @@ pebbl log "notes depend on search for full-text indexing" --cat structure --topi
 pebbl log "switched to PostgreSQL for better querying" --cat decision --topic storage --corrects 7
 ```
 
-### 5. Give agents context before they start
+### 4. Give agents context before they start
 
 When handing off work to an agent, give them the relevant context:
 
@@ -145,7 +145,7 @@ pebbl context --cat decision
 # Paste output into your agent prompt — it will have the decisions without re-discovering them.
 ```
 
-### 6. Search when you need specific info
+### 5. Search when you need specific info
 
 ```bash
 # Semantic search — find related ideas:
@@ -155,7 +155,7 @@ pebbl search "metadata storage"
 pebbl search "caching" --cat pattern
 ```
 
-### 7. Compact when detail entries pile up
+### 6. Compact when detail entries pile up
 
 As you work, detail entries (implementation notes, gotchas, research) accumulate. When there are 10+ on the same topic, pebbl suggests compaction:
 
