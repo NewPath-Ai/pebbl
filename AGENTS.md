@@ -10,12 +10,15 @@ you are the factory.
 
 Interactive sessions: feature and fix work goes through the factory
 pipeline (queue → build → adversarial review → staging), never ad-hoc
-subagents that bypass review. Write a task prompt (contract in
-`~/Documents/sw-factory/FACTORY.md`), then
+subagents that bypass review. Vague idea or new feature? `/factory-scope`
+first — goal interview, decision gate, then it queues the task itself.
+Already scoped: write a task prompt (contract in
+`~/factory/repos/sw-factory/FACTORY.md`), then
 `factory-queue pebbl <task-name> <prompt-file>`; the runner picks it up
 within 15 min and Telegram reports each stage. Don't also build it
-in-session. The droplet is the only deployment today; once the Mac
-deployment exists (FACTORY.md backlog F3), queue there by default.
+in-session. Two deployments run the same scripts: the Mac (`~/factory`,
+the default queue target) and the droplet (`--droplet`, the always-on
+overnight runner).
 Fallback only when no deployment is reachable: one task, one
 `agent/<task>-local` branch off origin/staging, routed through review
 later via `pipeline.sh pebbl <task> <prompt> <branch>`. Small in-session
