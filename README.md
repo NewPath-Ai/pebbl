@@ -69,7 +69,39 @@ dependency version published less than 24h ago - poisoned releases are
 almost always detected and pulled within hours. Build scripts are denied
 by default; the same file allowlists only `better-sqlite3` (native binding).
 
-### 1. Initialize pebbl in your project
+### 1. Install the CLI
+
+You need `pebbl` on your PATH. Two options:
+
+**Option A — npm link** (ties the command to this checkout):
+
+```bash
+npm link
+```
+
+This creates a global symlink so `pebbl` resolves to `./bin/pebbl.js` in
+whichever Node prefix is active.
+
+**Option B — manual symlink** (zero-dependency, works with any shell):
+
+```bash
+ln -s "$PWD/bin/pebbl.js" ~/bin/pebbl
+```
+
+`~/bin` must be on your PATH. Add this to `~/.zshrc` or `~/.bashrc` if it
+isn't already:
+
+```bash
+export PATH="$HOME/bin:$PATH"
+```
+
+Then reload your shell (`source ~/.zshrc`) and confirm:
+
+```bash
+pebbl help
+```
+
+### 3. Initialize pebbl in your project
 
 ```bash
 pebbl init
@@ -83,7 +115,7 @@ This creates `.pebbl/` with:
 
 Commit `.pebbl/` (but not the markdown projections — they're cached).
 
-### 2. Log decisions as you work
+### 4. Log decisions as you work
 
 ```bash
 # During development, capture architectural choices:
@@ -99,7 +131,7 @@ pebbl log "notes depend on search for full-text indexing" --cat structure --topi
 pebbl log "switched to PostgreSQL for better querying" --cat decision --topic storage --corrects 7
 ```
 
-### 3. Give agents context before they start
+### 5. Give agents context before they start
 
 When handing off work to an agent, give them the relevant context:
 
@@ -113,7 +145,7 @@ pebbl context --cat decision
 # Paste output into your agent prompt — it will have the decisions without re-discovering them.
 ```
 
-### 4. Search when you need specific info
+### 6. Search when you need specific info
 
 ```bash
 # Semantic search — find related ideas:
@@ -123,7 +155,7 @@ pebbl search "metadata storage"
 pebbl search "caching" --cat pattern
 ```
 
-### 5. Compact when detail entries pile up
+### 7. Compact when detail entries pile up
 
 As you work, detail entries (implementation notes, gotchas, research) accumulate. When there are 10+ on the same topic, pebbl suggests compaction:
 
