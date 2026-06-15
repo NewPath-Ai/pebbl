@@ -28,10 +28,30 @@ describe('parseArgs', () => {
     assert.deepStrictEqual(result.positional, ['hello', 'world']);
   });
 
-  it('passes unknown flags through as positional', () => {
-    const result = parseArgs(['--unknown', 'value', '--cat', 'decision']);
-    assert.deepStrictEqual(result.flags, { cat: 'decision' });
-    assert.deepStrictEqual(result.positional, ['--unknown', 'value']);
+  it('passes unknown flags through as positional and warns on stderr', () => {
+    const written = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => { written.push(chunk); return true; };
+    try {
+      const result = parseArgs(['--unknown', 'value', '--cat', 'decision']);
+      assert.deepStrictEqual(result.flags, { cat: 'decision' });
+      assert.deepStrictEqual(result.positional, ['--unknown', 'value']);
+      assert.ok(written.some(l => l.includes('unknown flag --unknown')), 'expected warning for --unknown');
+    } finally {
+      process.stderr.write = orig;
+    }
+  });
+
+  it('emits no warning for known flags', () => {
+    const written = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => { written.push(chunk); return true; };
+    try {
+      parseArgs(['--cat', 'decision', '--preview']);
+      assert.strictEqual(written.length, 0, 'expected no warnings for known flags');
+    } finally {
+      process.stderr.write = orig;
+    }
   });
 
   it('returns empty for no args', () => {
