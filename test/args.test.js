@@ -82,6 +82,18 @@ describe('parseArgs', () => {
     assert.deepStrictEqual(result.positional, ['summary']);
   });
 
+  it('parses --deep as a boolean flag (pebbl check --deep)', () => {
+    const result = parseArgs(['--deep']);
+    assert.deepStrictEqual(result.flags, { deep: true });
+    assert.deepStrictEqual(result.positional, []);
+  });
+
+  it('parses --n as a value flag (pebbl scan-commits --n 50)', () => {
+    const result = parseArgs(['--n', '50']);
+    assert.deepStrictEqual(result.flags, { n: '50' });
+    assert.deepStrictEqual(result.positional, []);
+  });
+
   it('parses handoff boolean flags (--latest, --list, --close)', () => {
     const result = parseArgs(['--latest']);
     assert.deepStrictEqual(result.flags, { latest: true });
