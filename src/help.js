@@ -79,6 +79,17 @@ points you at \`--corrects\` so you can supersede a wrong entry yourself.
 Flags:
   --deep    also grep the repo for backtick-wrapped symbols (slower, opt-in)
 `,
+  'scan-commits': `pebbl scan-commits — nudge to log decisions never captured
+
+Scans recent commits for decision-shaped changes (the rubric's decision-verb
+patterns) that have NO near-matching entry, and prints a ready-to-edit
+\`pebbl log "..." --cat decision\` line for each. NEVER auto-logs — every line
+is a suggestion you confirm. Dedupes against existing entries so an
+already-logged decision is not re-nudged.
+
+Flags:
+  --n <count>    how many recent commits to scan (default 30)
+`,
   init: `pebbl init — set up .pebbl/ in current project
 
 Creates .pebbl/ with sqlite store, writes PEBBL.md at project root,
