@@ -148,6 +148,8 @@ rules:
 const DEFAULT_CONFIG = `compaction:
   threshold: 10
   fleeting_retention: 30
+sources:
+  dirs: sources
 `;
 
 function migrateRubric(pebblDir) {
