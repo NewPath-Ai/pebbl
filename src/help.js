@@ -124,6 +124,7 @@ back to 'uncategorized', pebbl prints a loud warning.
 Flags:
   --cat <category>     filter by category
   --topic <topic>      filter by topic
+  --include-archive    also show compacted/archived history (ranked last)
 
 ${CATEGORIES}
 `,

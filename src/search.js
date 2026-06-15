@@ -25,6 +25,9 @@ function stripHandoffPrefix(message) {
 function formatResult(r) {
   // Source-doc discovery hits: external truth, tagged [source], no machine/topics.
   if (r.isSource) return `[source] ${r.source} — ${r.message}`;
+  // Compacted/archived history, surfaced only under --include-archive, tagged
+  // and ranked lowest so it never re-bloats live results.
+  if (r.tier === 'archived') return `[archived] [${r.cat}] ${r.date} — ${r.message}`;
   let out;
   if (r.isHandoff) {
     const open = r.status === 'open' ? ' · OPEN' : '';
@@ -261,10 +264,14 @@ module.exports = function search(args) {
   if (qmdAvailable()) {
     const raw = qmdQuery(pebblDir, query);
 
-    const local = raw.trim()
+    const all = raw.trim()
       ? dedupeResults(parseQmdResults(raw, flags.cat, flags.topic))
       : [];
-    const results = [...mergeMirror(local, mirrorResults), ...sourceResults];
+    // Archived (compacted) history is hidden by default and only restored,
+    // ranked lowest, under --include-archive — recoverability without re-bloat.
+    const local = all.filter(r => r.tier !== 'archived');
+    const archived = flags['include-archive'] ? all.filter(r => r.tier === 'archived') : [];
+    const results = [...mergeMirror(local, mirrorResults), ...sourceResults, ...archived];
 
     if (results.length === 0) {
       console.log('No results found.');
