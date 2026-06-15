@@ -19,6 +19,7 @@ const commands = {
   narrative:    () => require('../src/narrative')(args),
   feedback:     () => require('../src/feedback')(args),
   check:        () => require('../src/check')(args),
+  'scan-commits': () => require('../src/scan-commits')(args),
   'log-commit': () => require('../src/log-commit')(args[0], args[1], args[2]),
 };
 
