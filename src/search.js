@@ -4,9 +4,10 @@ const { requirePebblDir } = require('./find-pebbl');
 const { openDb, topicFilter } = require('./db');
 const { qmdAvailable, qmdQuery } = require('./qmd');
 const { displayEntry } = require('./log');
-const { ensureProjectFiles } = require('./rubric');
+const { ensureProjectFiles, loadConfig } = require('./rubric');
 const { splitItems } = require('./handoff');
 const { mirrorLogs, mirrorHandoffs } = require('./mirror');
+const { searchSources } = require('./sources');
 
 // Normalize a message for near-duplicate comparison.
 function normalize(s) {
@@ -22,6 +23,8 @@ function stripHandoffPrefix(message) {
 // Render a structured result object to a display line. Results read from
 // another machine's mirror carry r.machine and get a leading [machine] tag.
 function formatResult(r) {
+  // Source-doc discovery hits: external truth, tagged [source], no machine/topics.
+  if (r.isSource) return `[source] ${r.source} — ${r.message}`;
   let out;
   if (r.isHandoff) {
     const open = r.status === 'open' ? ' · OPEN' : '';
@@ -190,7 +193,7 @@ function searchHandoffsSqlite(db, query, topic) {
   return results;
 }
 
-function searchSqlite(pebblDir, query, cat, topic, mirrorResults) {
+function searchSqlite(pebblDir, query, cat, topic, mirrorResults, sourceResults) {
   const db = openDb(pebblDir);
 
   let sql = "SELECT timestamp, source, category, tier, message, topics FROM logs WHERE tier != 'archived' AND message LIKE ?";
@@ -219,10 +222,11 @@ function searchSqlite(pebblDir, query, cat, topic, mirrorResults) {
   }));
 
   const handoffResults = searchHandoffsSqlite(db, query, topic);
-  const results = mergeMirror(
-    dedupeResults([...logResults, ...handoffResults]),
-    mirrorResults || []
-  );
+  // Source-doc hits rank BELOW curated + mirror entries — appended last.
+  const results = [
+    ...mergeMirror(dedupeResults([...logResults, ...handoffResults]), mirrorResults || []),
+    ...(sourceResults || []),
+  ];
 
   if (results.length === 0) {
     console.log('No results found.');
@@ -250,6 +254,9 @@ module.exports = function search(args) {
   ensureProjectFiles(pebblDir);
 
   const mirrorResults = searchMirrors(pebblDir, query, flags.cat, flags.topic);
+  // Read-only [source] discovery hits, ranked BELOW curated entries (appended last).
+  const config = loadConfig(pebblDir) || {};
+  const sourceResults = searchSources(pebblDir, query, config);
 
   if (qmdAvailable()) {
     const raw = qmdQuery(pebblDir, query);
@@ -257,7 +264,7 @@ module.exports = function search(args) {
     const local = raw.trim()
       ? dedupeResults(parseQmdResults(raw, flags.cat, flags.topic))
       : [];
-    const results = mergeMirror(local, mirrorResults);
+    const results = [...mergeMirror(local, mirrorResults), ...sourceResults];
 
     if (results.length === 0) {
       console.log('No results found.');
@@ -271,8 +278,8 @@ module.exports = function search(args) {
     }
     console.log('---\n');
   } else {
-    searchSqlite(pebblDir, query, flags.cat, flags.topic, mirrorResults);
+    searchSqlite(pebblDir, query, flags.cat, flags.topic, mirrorResults, sourceResults);
   }
 };
 
-module.exports._internal = { parseQmdResults, dedupeResults, formatResult, stripHandoffPrefix, normalize, searchHandoffsSqlite, searchMirrors, mergeMirror };
+module.exports._internal = { parseQmdResults, dedupeResults, formatResult, stripHandoffPrefix, normalize, searchHandoffsSqlite, searchMirrors, mergeMirror, searchSources, searchSqlite };
