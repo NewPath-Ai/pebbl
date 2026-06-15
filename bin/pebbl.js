@@ -18,6 +18,7 @@ const commands = {
   handoff:      () => require('../src/handoff')(args),
   narrative:    () => require('../src/narrative')(args),
   feedback:     () => require('../src/feedback')(args),
+  check:        () => require('../src/check')(args),
   'log-commit': () => require('../src/log-commit')(args[0], args[1], args[2]),
 };
 
