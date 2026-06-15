@@ -20,6 +20,7 @@ function parseArgs(args) {
       const key = arg.slice(2);
 
       if (!KNOWN_FLAGS.has(key)) {
+        process.stderr.write(`pebbl: unknown flag ${arg} (ignored)\n`);
         positional.push(arg);
         continue;
       }
