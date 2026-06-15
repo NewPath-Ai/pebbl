@@ -17,6 +17,7 @@ function buildGroups(db, threshold, componentThreshold) {
   const groups = new Map();
   const ambiguous = [];
   const fleeting = [];
+  const protectedDecisions = [];
 
   for (const row of rows) {
     if (row.tier === 'fleeting') {
@@ -26,6 +27,15 @@ function buildGroups(db, threshold, componentThreshold) {
 
     if (row.category === 'uncategorized') {
       ambiguous.push(row);
+      continue;
+    }
+
+    // A component-tier decision is a high-value, retrievable fact. Rolling it
+    // into a detail rollup demotes its tier and drops it from the topic index
+    // — a self-inflicted recall miss. Pull it out for an explicit keep/rollup
+    // decision instead of compacting it silently.
+    if (row.tier === 'component' && row.category === 'decision') {
+      protectedDecisions.push(row);
       continue;
     }
 
@@ -48,7 +58,20 @@ function buildGroups(db, threshold, componentThreshold) {
     }
   }
 
-  return { groups: qualified, ambiguous, fleeting };
+  return { groups: qualified, ambiguous, fleeting, protected: protectedDecisions };
+}
+
+// Union of every source entry's topics (deduped, order-preserving). A rollup
+// must carry ALL its entries' topics, not just the first entry's primary topic,
+// or the rolled-up history vanishes from the other topics' index.
+function unionTopics(entries) {
+  const seen = [];
+  for (const e of entries) {
+    for (const t of String(e.topics || '').split(',').map(s => s.trim()).filter(Boolean)) {
+      if (!seen.includes(t)) seen.push(t);
+    }
+  }
+  return seen.join(',');
 }
 
 function generateRollupMessage(entries) {
@@ -73,6 +96,19 @@ function archiveEntries(pebblDir, entries, archiveTs) {
   content += '---\n';
 
   fs.appendFileSync(archiveFile, content);
+
+  // Also append to a qmd-indexed projection so compacted history stays
+  // searchable. archive/*.txt is plain text qmd doesn't parse into entries;
+  // archive.md uses the same block format as manual-logs.md but marked
+  // tier:archived, so `pebbl search --include-archive` can find and rank it.
+  const archiveMd = path.join(pebblDir, 'archive.md');
+  let md = '';
+  for (const e of entries) {
+    const topicStr = e.topics || '';
+    md += `## ${e.timestamp} - ${e.message}\n`;
+    md += `<!-- cat:${e.category} topic:${topicStr} tier:archived source:${e.source || 'agent'} -->\n\n`;
+  }
+  fs.appendFileSync(archiveMd, md);
 }
 
 function regenerateMarkdown(pebblDir) {
@@ -143,11 +179,12 @@ module.exports.buildGroups = buildGroups;
 module.exports.archiveEntries = archiveEntries;
 module.exports.regenerateMarkdown = regenerateMarkdown;
 module.exports.generateRollupMessage = generateRollupMessage;
+module.exports.unionTopics = unionTopics;
 
 function previewMode(db, threshold, componentThreshold) {
-  const { groups, ambiguous, fleeting } = buildGroups(db, threshold, componentThreshold);
+  const { groups, ambiguous, fleeting, protected: protectedDecisions } = buildGroups(db, threshold, componentThreshold);
 
-  if (groups.size === 0 && ambiguous.length === 0 && fleeting.length === 0) {
+  if (groups.size === 0 && ambiguous.length === 0 && fleeting.length === 0 && protectedDecisions.length === 0) {
     console.log('No entries ready for compaction.');
     return;
   }
@@ -176,6 +213,14 @@ function previewMode(db, threshold, componentThreshold) {
 
   if (fleeting.length > 0) {
     console.log(`FLEETING — ${fleeting.length} entries (will be deleted on execute)\n`);
+  }
+
+  if (protectedDecisions.length > 0) {
+    console.log(`PROTECTED — ${protectedDecisions.length} component decisions (KEPT, never auto-rolled — your call):`);
+    for (const e of protectedDecisions) {
+      console.log(`  [id:${e.id}] "${e.message}"`);
+    }
+    console.log();
   }
 
   console.log('Run: pebbl compact --execute');
@@ -236,7 +281,7 @@ function executeMode(db, pebblDir, config, resolveRaw) {
       db.prepare(`
         INSERT INTO logs (timestamp, source, category, tier, message, topics, relates_to, corrects)
         VALUES (?, 'agent', ?, 'detail', ?, ?, NULL, NULL)
-      `).run(ts, first.category, rollupMsg, first.topics);
+      `).run(ts, first.category, rollupMsg, unionTopics(entries));
 
       const ids = entries.map(e => e.id);
       db.prepare(`DELETE FROM logs WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
