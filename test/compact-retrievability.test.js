@@ -5,9 +5,13 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const Database = require('better-sqlite3');
+const { execSync } = require('child_process');
 const { buildGroups, unionTopics, archiveEntries } = require('../src/compact');
 const { _internal } = require('../src/search');
+const { parseArgs } = require('../src/args');
+const { qmdAvailable } = require('../src/qmd');
 const { parseQmdResults, formatResult } = _internal;
+const BIN = path.resolve(__dirname, '../bin/pebbl.js');
 
 function db() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-compact-'));
@@ -72,5 +76,30 @@ describe('compact-retrievability - archived stays searchable (change 3)', () => 
     assert.equal(r.length, 1);
     assert.equal(r[0].tier, 'archived');
     assert.equal(formatResult(r[0]), '[archived] [decision] 2026-05-01 — used bcrypt for hashing');
+  });
+
+  it('--include-archive is a registered boolean flag (else search never reads it)', () => {
+    assert.equal(parseArgs(['query', '--include-archive']).flags['include-archive'], true);
+    // without it, the flag is undefined and the archived branch is dead
+    assert.equal(parseArgs(['query']).flags['include-archive'], undefined);
+  });
+
+  it('search hides archived by default, restores it under --include-archive', { skip: !qmdAvailable() }, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-arch-e2e-'));
+    const sh = (c) => execSync(c, { cwd: dir, stdio: 'ignore' });
+    const out = (c) => execSync(c, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    try {
+      sh('git init -q'); sh(`node "${BIN}" init`);
+      const Database = require('better-sqlite3');
+      const d = new Database(path.join(dir, '.pebbl', 'db.sqlite'));
+      const ins = d.prepare('INSERT INTO logs (timestamp,source,category,tier,message,topics) VALUES (?,?,?,?,?,?)');
+      for (let i = 0; i < 12; i++) ins.run(`2026-05-${10 + i}`, 'human', 'pattern', 'detail', `ARCHIVEWORD note ${i}`, 'style');
+      d.close();
+      sh(`node "${BIN}" compact --execute`);   // rolls them up + writes/indexes archive.md
+      assert.doesNotMatch(out(`node "${BIN}" search ARCHIVEWORD`), /\[archived\]/);
+      assert.match(out(`node "${BIN}" search ARCHIVEWORD --include-archive`), /\[archived\]/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
