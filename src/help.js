@@ -69,6 +69,16 @@ safe to delete (they'll re-materialize on the next pebbl write).`,
 };
 
 const SUBCOMMANDS = {
+  check: `pebbl check — flag entries that cite files that no longer exist
+
+Scans memory for high-confidence path references (a slash + a known
+extension) and reports any entry whose cited file is missing from the repo,
+highest-tier and newest first. Report only — never edits or deletes; it
+points you at \`--corrects\` so you can supersede a wrong entry yourself.
+
+Flags:
+  --deep    also grep the repo for backtick-wrapped symbols (slower, opt-in)
+`,
   init: `pebbl init — set up .pebbl/ in current project
 
 Creates .pebbl/ with sqlite store, writes PEBBL.md at project root,

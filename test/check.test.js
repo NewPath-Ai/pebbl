@@ -1,0 +1,88 @@
+'use strict';
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { execSync } = require('child_process');
+const { _internal } = require('../src/check');
+const { extractPaths, extractSymbols, checkEntries } = _internal;
+
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-check-'));
+const entry = (o) => ({ id: 1, tier: 'detail', timestamp: '2026-06-10T00:00:00Z', category: 'x', ...o });
+
+describe('check - extractPaths', () => {
+  it('extracts high-confidence repo-relative path tokens', () => {
+    assert.deepEqual(
+      extractPaths('fixed in src/foo.js and droplet/repos.conf today').sort(),
+      ['droplet/repos.conf', 'src/foo.js']
+    );
+  });
+  it('ignores bare words, URLs, absolute and home paths', () => {
+    assert.deepEqual(
+      extractPaths('see https://x.com/a.js and /etc/thing.conf and ~/x/y.js and plainword'),
+      []
+    );
+  });
+  it('extracts a backtick-wrapped path', () => {
+    assert.deepEqual(extractPaths('the `test/check.test.js` file'), ['test/check.test.js']);
+  });
+});
+
+describe('check - checkEntries (paths)', () => {
+  it('flags exactly the entry citing a missing file; spares the present one', () => {
+    const repo = tmp();
+    fs.mkdirSync(path.join(repo, 'src'));
+    fs.writeFileSync(path.join(repo, 'src/present.js'), 'x');
+    const entries = [
+      entry({ id: 1, tier: 'component', message: 'uses src/present.js for X' }),
+      entry({ id: 2, tier: 'foundation', timestamp: '2026-06-11T00:00:00Z', message: 'the gone src/missing.js does Y' }),
+    ];
+    const flagged = checkEntries(entries, repo);
+    assert.equal(flagged.length, 1);
+    assert.equal(flagged[0].id, 2);
+    assert.deepEqual(flagged[0].missingPaths, ['src/missing.js']);
+  });
+
+  it('orders highest-tier first (foundation outranks fleeting even if older)', () => {
+    const repo = tmp();
+    const flagged = checkEntries([
+      entry({ id: 1, tier: 'fleeting', timestamp: '2026-06-12T00:00:00Z', message: 'gone a/x.js' }),
+      entry({ id: 2, tier: 'foundation', timestamp: '2026-06-10T00:00:00Z', message: 'gone b/y.js' }),
+    ], repo);
+    assert.equal(flagged[0].tier, 'foundation');
+  });
+
+  it('symbol-grep is behind --deep: default does not flag a backtick symbol', () => {
+    const repo = tmp();
+    const entries = [entry({ message: 'calls `nonexistentSymbol()` somewhere' })];
+    assert.equal(checkEntries(entries, repo).length, 0);
+    assert.deepEqual(extractSymbols(entries[0].message), ['nonexistentSymbol']);
+  });
+
+  it('never mutates the input entries', () => {
+    const repo = tmp();
+    const entries = [entry({ message: 'gone z/q.js' })];
+    const before = JSON.stringify(entries);
+    checkEntries(entries, repo);
+    assert.equal(JSON.stringify(entries), before);
+  });
+});
+
+describe('check - --deep symbol grep (git-backed)', () => {
+  it('flags a missing symbol and spares a present one under deep', () => {
+    const repo = tmp();
+    const git = (c) => execSync(c, { cwd: repo, stdio: 'ignore' });
+    git('git init -q');
+    git('git config user.email t@t.invalid');
+    git('git config user.name t');
+    fs.writeFileSync(path.join(repo, 'code.js'), 'function presentSym() { return 1; }\n');
+    git('git add -A');
+    git('git commit -qm init');
+    const present = checkEntries([entry({ message: 'uses `presentSym()` here' })], repo, { deep: true });
+    assert.equal(present.length, 0, 'present symbol must not be flagged');
+    const absent = checkEntries([entry({ message: 'uses `absentSym()` here' })], repo, { deep: true });
+    assert.equal(absent.length, 1, 'absent symbol must be flagged under --deep');
+    assert.deepEqual(absent[0].missingSymbols, ['absentSym']);
+  });
+});
