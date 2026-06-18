@@ -7,6 +7,7 @@ const { openDb } = require('./db');
 const { qmdUpdate } = require('./qmd');
 const { loadRubric, classifyEntry, ensureProjectFiles } = require('./rubric');
 const { isThinEntry } = require('./detect-thin');
+const { appendLogEvent } = require('./events');
 
 const VALID_CATEGORIES = [
   'decision', 'structure', 'pattern', 'data', 'integration', 'quality',
@@ -162,8 +163,38 @@ module.exports = function log(args) {
 
   qmdUpdate(pebblDir);
 
+  // ADDITIVE event-sourcing path (P0 tracer). On TOP of the SQLite write +
+  // markdown projection above (which stay canonical for now), also append
+  // an `append` event to .pebbl/events.jsonl and rebuild a view from the
+  // fold. The whole append+rebuild is serialized by the per-store lock so a
+  // concurrent local write can't interleave. db.sqlite remains the source
+  // of truth; this proves the committed-text path end to end alongside it.
+  try {
+    appendLogEvent(
+      pebblDir,
+      { ts, category, tier, message, topics },
+      (rows) => rebuildEventsView(pebblDir, rows),
+    );
+  } catch (err) {
+    // Never let the new additive path break the existing, canonical write.
+    console.error(`pebbl: events.jsonl append skipped (${err.message})`);
+  }
+
   console.log(mdEntry.out);
 };
+
+// Rebuild the folded view projection from `append` events. Separate file
+// from manual-logs.md so the existing (canonical) projection is untouched;
+// this is the read end of the tracer's append -> fold -> read loop. Row
+// shape mirrors regenerateMarkdown (compact.js:114-130) for familiarity.
+function rebuildEventsView(pebblDir, rows) {
+  let md = '# Events View (folded)\n\n';
+  for (const row of rows) {
+    md += `## ${row.timestamp} - ${row.message}\n`;
+    md += `<!-- eid:${row.eid} cat:${row.category} topic:${row.topics} tier:${row.tier} actor:${row.actor} -->\n\n`;
+  }
+  fs.writeFileSync(path.join(pebblDir, 'events-view.md'), md);
+}
 
 module.exports.VALID_CATEGORIES = VALID_CATEGORIES;
 module.exports.VALID_TIERS = VALID_TIERS;

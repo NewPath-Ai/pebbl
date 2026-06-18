@@ -98,6 +98,24 @@ function init() {
     console.log('Created .gitignore with .pebbl/');
   }
 
+  // .gitattributes — install the union merge driver for events.jsonl.
+  // MANDATORY for clean multi-contributor merge: without `merge=union`,
+  // two appends after the same last line conflict. Idempotent: only add
+  // the line if it isn't already present (don't duplicate on re-init).
+  const gitattributes = path.join(cwd, '.gitattributes');
+  const attrLine = '.pebbl/events.jsonl merge=union';
+  if (fs.existsSync(gitattributes)) {
+    const existing = fs.readFileSync(gitattributes, 'utf8');
+    if (!existing.split('\n').some((l) => l.trim() === attrLine)) {
+      const sep = existing.endsWith('\n') || existing === '' ? '' : '\n';
+      fs.appendFileSync(gitattributes, `${sep}${attrLine}\n`);
+      console.log('Added events.jsonl merge=union to .gitattributes');
+    }
+  } else {
+    fs.writeFileSync(gitattributes, `${attrLine}\n`);
+    console.log('Created .gitattributes with events.jsonl merge=union');
+  }
+
   // AGENTS.md — create or append, never overwrite user content outside the sentinels
   const agentMd = path.join(cwd, 'AGENTS.md');
   if (!fs.existsSync(agentMd)) {
