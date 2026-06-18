@@ -55,6 +55,21 @@ CREATE INDEX IF NOT EXISTS idx_logs_valid_to ON logs(valid_to);
 `;
 
 function openDb(pebblDir) {
+  // P4 — lazy staleness on the read path. Before handing back a handle, bring
+  // view.sqlite + the 4 markdown files up to date with events.jsonl if a
+  // post-merge/post-checkout (or a concurrent append on another machine) added
+  // lines since the last fold. This is what makes "new view rows surface after
+  // an append with NO manual rebuild" true on the very next command, and what
+  // lets the git hooks stay lazy (they only touch a sentinel; the fold happens
+  // here on the next read). Cheap when already fresh (a fingerprint compare, no
+  // fold) and a no-op when this process already holds the store lock (we're
+  // mid-write — see staleness.ensureFresh's re-entrancy guard). Best-effort: a
+  // staleness failure must never break opening db.sqlite (the canonical store).
+  try {
+    require('./staleness').ensureFresh(pebblDir);
+  } catch {
+    // never let the lazy fold break the canonical read path
+  }
   const db = new Database(path.join(pebblDir, 'db.sqlite'));
   db.exec(SCHEMA);
   migrate(db);

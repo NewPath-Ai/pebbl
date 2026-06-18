@@ -39,6 +39,26 @@ FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | tr '\\n' ',')
 pebbl log-commit "$HASH" "$MESSAGE" "$FILES"
 `;
 
+// P4 — post-merge / post-checkout rebuild trigger. A `git merge` or
+// `git checkout` can pull NEW events.jsonl lines into the store (the whole
+// point of committed, shared memory), but the view (view.sqlite + markdown) is
+// derived and gitignored, so it would be stale until something rebuilt it.
+// These hooks DO NOT fold inline — folding the whole log inside a git hook
+// would make every pull/checkout slow and could block on the lock. They only
+// TOUCH a sentinel; the actual rebuild is LAZY, done by the staleness check
+// (src/staleness.js, wired into openDb) on the very next pebbl command. The
+// sentinel is a cheap, idempotent marker that a rebuild is due. mkdir -p guards
+// the case where .pebbl/ isn't present in the checked-out tree yet.
+const REBUILD_HOOK_SCRIPT = `#!/bin/sh
+# pebbl P4: mark the view stale after a merge/checkout pulled new events.
+# The rebuild itself is lazy — it happens on the next \`pebbl\` command, never
+# here (folding inline would make every pull/checkout slow).
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -d "$ROOT/.pebbl" ] || exit 0
+: > "$ROOT/.pebbl/.rebuild-needed" 2>/dev/null || true
+exit 0
+`;
+
 function init() {
   const cwd = process.cwd();
   const pebblDir = path.join(cwd, '.pebbl');
@@ -74,14 +94,27 @@ function init() {
   openDb(pebblDir);
   console.log('Initialized db.sqlite');
 
-  // Git hook
+  // Git hooks
   const gitDir = path.join(cwd, '.git');
   if (fs.existsSync(gitDir)) {
-    const hookPath = path.join(gitDir, 'hooks', 'post-commit');
-    fs.writeFileSync(hookPath, HOOK_SCRIPT, { mode: 0o755 });
+    const hooksDir = path.join(gitDir, 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    // writeFileSync's `mode` only applies on CREATE — an existing hook keeps its
+    // old mode — so chmod explicitly after writing to guarantee +x on re-init.
+    const writeHook = (name, body) => {
+      const p = path.join(hooksDir, name);
+      fs.writeFileSync(p, body, { mode: 0o755 });
+      fs.chmodSync(p, 0o755);
+    };
+    writeHook('post-commit', HOOK_SCRIPT);
     console.log('Installed post-commit hook');
+    // P4: post-merge + post-checkout mark the view stale (sentinel touch only);
+    // the rebuild is lazy on the next pebbl command, never inside the hook.
+    writeHook('post-merge', REBUILD_HOOK_SCRIPT);
+    writeHook('post-checkout', REBUILD_HOOK_SCRIPT);
+    console.log('Installed post-merge and post-checkout rebuild hooks');
   } else {
-    console.log('No .git/ found — skipping git hook (run inside a git repo to enable).');
+    console.log('No .git/ found — skipping git hooks (run inside a git repo to enable).');
   }
 
   // .gitignore

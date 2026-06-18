@@ -178,6 +178,16 @@ ${TIERS}
 fleeting entries are pruned; foundation entries are always kept.
 `,
 
+  rebuild: `pebbl rebuild — force a rebuild of the view from events.jsonl
+
+Re-folds the canonical .pebbl/events.jsonl into the disposable view
+(view.sqlite + the markdown projections) and refreshes the qmd index in
+the background. The view is normally kept current automatically on every
+command, so you rarely need this — reach for it after hand-editing or
+repairing events.jsonl, or to force a refresh in a script. Runs under the
+per-store lock so it can't interleave with a concurrent write.
+`,
+
   feedback: `pebbl feedback "[message]" — drop feedback when pebbl misbehaves here
 
 Flags:
