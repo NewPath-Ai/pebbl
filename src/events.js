@@ -22,6 +22,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { ulid } = require('./ulid');
 const { withLock } = require('./lock');
+const { fold, foldFull } = require('./fold');
 
 const EVENTS_FILE = 'events.jsonl';
 const ENVELOPE_VERSION = 1;
@@ -140,34 +141,13 @@ function readEvents(pebblDir) {
   return events;
 }
 
-// Deterministic fold: events[] -> view rows. P0 handles ONLY `append`.
-// Determinism is load-bearing: file/line order is irrelevant because we
-// sort by (ts, emitted_at, eid). eid is the final tie-break and is globally
-// unique, so the order is total — folding the same events twice, in any
-// input order, yields byte-identical rows. This is a NEW events->rows
-// reduction, not a db read.
-function fold(events) {
-  const appends = events.filter((e) => e && e.type === 'append');
-  appends.sort((a, b) => {
-    if (a.ts !== b.ts) return a.ts < b.ts ? -1 : 1;
-    if (a.emitted_at !== b.emitted_at) return a.emitted_at < b.emitted_at ? -1 : 1;
-    if (a.eid !== b.eid) return a.eid < b.eid ? -1 : 1;
-    return 0;
-  });
-  return appends.map((e) => ({
-    eid: e.eid,
-    timestamp: e.ts,
-    actor: e.actor || '',
-    category: e.category || 'uncategorized',
-    tier: e.tier || 'detail',
-    message: e.message || '',
-    // Normalize topics back to the comma-joined string the rest of pebbl
-    // uses (logs.topics is TEXT), so a folded row matches the existing row
-    // shape referenced by regenerateMarkdown (compact.js:114-130).
-    topics: Array.isArray(e.topics) ? e.topics.join(',') : (e.topics || ''),
-    actorTopics: Array.isArray(e.topics) ? e.topics.slice() : [],
-  }));
-}
+// Deterministic fold: events[] -> view rows. As of P1 the real reducer lives
+// in src/fold.js (full 8-type event set, supersession hiding, eid->local-int
+// FK translation, the view.sqlite + markdown emitters). It is imported above
+// and RE-EXPORTED here so it is reachable from BOTH `require('./events').fold`
+// (P3 gates on this) and `require('./fold').fold` (P2/P4/P5/P6 gate on it) —
+// both resolve to the exact same reducer; the sequential chain breaks if they
+// diverge. `fold` and `foldFull` are the imported references (see top of file).
 
 // High-level entry: append one `append` event and rebuild the view inline,
 // the whole thing serialized by the per-store lock so a concurrent local
@@ -195,5 +175,6 @@ module.exports = {
   appendEvent,
   readEvents,
   fold,
+  foldFull,
   appendLogEvent,
 };
