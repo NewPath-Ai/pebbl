@@ -98,6 +98,99 @@ describe('P0: two-contributor git merge of events.jsonl', () => {
   });
 });
 
+describe('P0: union-merge of a TORN committed base line (the design worst case)', () => {
+  // The design names this exact failure as reproduced: a committed last line
+  // WITHOUT a trailing newline, then a union merge, splices two JSON objects
+  // onto one line — exit 0, no conflict markers, unparseable. The newline
+  // invariant (repair-before-append) is what prevents it. The two earlier
+  // tests cover a clean merge and torn-repair SEPARATELY; this pins the
+  // combined case, which is the actual load-bearing claim of the tracer.
+
+  // First, prove the failure is real WITHOUT the invariant: a raw `>>`
+  // appender (no repair) leaves union to mangle the torn base. If this ever
+  // stops corrupting, the test below is no longer guarding anything.
+  it('raw concat appends onto a torn base DO corrupt under union (failure exists)', () => {
+    const repo = tmpDir();
+    gitInit(repo);
+    fs.writeFileSync(path.join(repo, '.gitattributes'), '.pebbl/events.jsonl merge=union\n');
+    const pebblDir = path.join(repo, '.pebbl');
+    fs.mkdirSync(pebblDir);
+    const file = eventsPath(pebblDir);
+
+    // committed base line with NO trailing newline (torn)
+    const base = makeAppendEvent(pebblDir, { ts: '2026-01-01T00:00:00.000Z', message: 'base torn', category: 'data', tier: 'detail' });
+    fs.writeFileSync(file, JSON.stringify(base)); // intentionally unterminated
+    execFileSync('git', ['add', '-f', '.gitattributes', '.pebbl/events.jsonl'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'base'], { cwd: repo });
+
+    // branch a: RAW append (bypasses repairTrailingNewline)
+    execFileSync('git', ['checkout', '-q', '-b', 'a'], { cwd: repo });
+    const a = makeAppendEvent(pebblDir, { ts: '2026-01-02T00:00:00.000Z', message: 'alice', category: 'data', tier: 'detail' });
+    fs.appendFileSync(file, JSON.stringify(a) + '\n');
+    execFileSync('git', ['add', '-f', '.pebbl/events.jsonl'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'alice'], { cwd: repo });
+
+    // branch b from the torn base: RAW append too
+    execFileSync('git', ['checkout', '-q', 'main'], { cwd: repo });
+    execFileSync('git', ['checkout', '-q', '-b', 'b'], { cwd: repo });
+    const b = makeAppendEvent(pebblDir, { ts: '2026-01-03T00:00:00.000Z', message: 'bob', category: 'data', tier: 'detail' });
+    fs.appendFileSync(file, JSON.stringify(b) + '\n');
+    execFileSync('git', ['add', '-f', '.pebbl/events.jsonl'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'bob'], { cwd: repo });
+
+    const merge = git(repo, ['merge', '--no-edit', 'a']);
+    assert.equal(merge.status, 0, 'union merge should still exit 0 (silent corruption, no markers)');
+    const merged = fs.readFileSync(file, 'utf8');
+    // The torn base got spliced: at least one line carries TWO JSON objects and
+    // is unparseable. This is the silent corruption the invariant prevents.
+    const someLineMangled = merged
+      .split('\n')
+      .filter((l) => l.trim())
+      .some((l) => { try { JSON.parse(l); return false; } catch { return true; } });
+    assert.ok(someLineMangled, 'expected union to splice the torn base into an unparseable line');
+  });
+
+  // Now the real assertion: when BOTH contributors append through pebbl's
+  // path (repairTrailingNewline runs first), the SAME torn base merges clean.
+  it('pebbl appendEvent repairs the torn base first, so the same union merge stays clean', () => {
+    const repo = tmpDir();
+    gitInit(repo);
+    fs.writeFileSync(path.join(repo, '.gitattributes'), '.pebbl/events.jsonl merge=union\n');
+    const pebblDir = path.join(repo, '.pebbl');
+    fs.mkdirSync(pebblDir);
+    const file = eventsPath(pebblDir);
+
+    // committed base line with NO trailing newline (torn) — identical setup.
+    const base = makeAppendEvent(pebblDir, { ts: '2026-01-01T00:00:00.000Z', message: 'base torn', category: 'data', tier: 'detail' });
+    fs.writeFileSync(file, JSON.stringify(base));
+    execFileSync('git', ['add', '-f', '.gitattributes', '.pebbl/events.jsonl'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'base'], { cwd: repo });
+
+    // branch a: append via appendEvent (repairs the torn line BEFORE writing).
+    execFileSync('git', ['checkout', '-q', '-b', 'a'], { cwd: repo });
+    appendEvent(pebblDir, makeAppendEvent(pebblDir, { ts: '2026-01-02T00:00:00.000Z', message: 'alice', category: 'data', tier: 'detail' }));
+    execFileSync('git', ['add', '-f', '.pebbl/events.jsonl'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'alice'], { cwd: repo });
+
+    // branch b from the torn base: append via appendEvent (also repairs first).
+    execFileSync('git', ['checkout', '-q', 'main'], { cwd: repo });
+    execFileSync('git', ['checkout', '-q', '-b', 'b'], { cwd: repo });
+    appendEvent(pebblDir, makeAppendEvent(pebblDir, { ts: '2026-01-03T00:00:00.000Z', message: 'bob', category: 'data', tier: 'detail' }));
+    execFileSync('git', ['add', '-f', '.pebbl/events.jsonl'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'bob'], { cwd: repo });
+
+    const merge = git(repo, ['merge', '--no-edit', 'a']);
+    assert.equal(merge.status, 0, `git merge exited non-zero:\n${merge.stdout}\n${merge.stderr}`);
+    const merged = fs.readFileSync(file, 'utf8');
+    assert.ok(!/^<<<<<<<|^=======|^>>>>>>>/m.test(merged), 'conflict markers present');
+    for (const line of merged.split('\n').filter((l) => l.trim())) {
+      assert.doesNotThrow(() => JSON.parse(line), `mangled line after merge: ${line}`);
+    }
+    const msgs = fold(readEvents(pebblDir)).map((r) => r.message).sort();
+    assert.deepEqual(msgs, ['alice', 'base torn', 'bob'], 'fold must surface all three intact');
+  });
+});
+
 describe('P0: torn-last-line repair', () => {
   it('appends without corruption when the last committed line lacks a trailing newline', () => {
     const dir = tmpDir();
