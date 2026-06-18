@@ -88,6 +88,25 @@ function migrate(db) {
     setVersion(db, 0.5);
     console.error('pebbl: migrated db to v0.5 (bi-temporal corrects)');
   }
+  if (version < 0.6) {
+    // Rerank signals: columns the future weighted score reads. Additive, no
+    // data loss. They are NOT populated at runtime in this slice (incrementing
+    // access_count on read and setting importance are follow-ups); the score is
+    // proven against the audited fixture first. Defaults keep existing rows
+    // scorable (importance 0, access_count 0, last_accessed unknown).
+    const cols = new Set(db.prepare('PRAGMA table_info(logs)').all().map(c => c.name));
+    if (!cols.has('importance')) {
+      db.exec('ALTER TABLE logs ADD COLUMN importance REAL DEFAULT 0;');
+    }
+    if (!cols.has('access_count')) {
+      db.exec('ALTER TABLE logs ADD COLUMN access_count INTEGER DEFAULT 0;');
+    }
+    if (!cols.has('last_accessed')) {
+      db.exec('ALTER TABLE logs ADD COLUMN last_accessed TEXT DEFAULT NULL;');
+    }
+    setVersion(db, 0.6);
+    console.error('pebbl: migrated db to v0.6 (rerank signals)');
+  }
 }
 
 module.exports = { migrate, getVersion };

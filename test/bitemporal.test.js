@@ -109,7 +109,7 @@ describe('bitemporal migration (v0.5)', () => {
     const dir = tmpDir();
     fs.mkdirSync(path.join(dir, '.pebbl'));
     const db = openDb(path.join(dir, '.pebbl'));
-    assert.strictEqual(getVersion(db), 0.5);
+    assert.ok(getVersion(db) >= 0.5); // at least the v0.5 columns are present (head may be later)
     const names = db.prepare('PRAGMA table_info(logs)').all().map(c => c.name);
     assert.ok(names.includes('valid_from'));
     assert.ok(names.includes('valid_to'));
@@ -124,7 +124,7 @@ describe('bitemporal migration (v0.5)', () => {
         .run('2026-01-01T00:00:00.000Z', 'an old belief');
     });
     migrate(db);
-    assert.strictEqual(getVersion(db), 0.5);
+    assert.ok(getVersion(db) >= 0.5);
     const names = db.prepare('PRAGMA table_info(logs)').all().map(c => c.name);
     assert.ok(names.includes('valid_from') && names.includes('valid_to') && names.includes('invalidated_by'));
     const row = db.prepare('SELECT valid_from, valid_to FROM logs WHERE message = ?').get('an old belief');
@@ -153,9 +153,10 @@ describe('bitemporal migration (v0.5)', () => {
     const dir = tmpDir();
     const db = v04Db(dir);
     migrate(db);
-    assert.strictEqual(getVersion(db), 0.5);
+    const v = getVersion(db);
+    assert.ok(v >= 0.5);
     assert.doesNotThrow(() => migrate(db));
-    assert.strictEqual(getVersion(db), 0.5);
+    assert.strictEqual(getVersion(db), v); // idempotent: head unchanged on a second run
     db.close();
   });
 });
