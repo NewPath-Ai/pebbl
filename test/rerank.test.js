@@ -16,17 +16,24 @@
 //     query topic. We use the real db.js predicates (topicFilter + notCorrected)
 //     against a tmp sqlite loaded from the corpus, so we exercise the same
 //     filtering the product uses, not a reimplementation.
-//   Then we compute recall@5 against expected_top_k for two orderings:
+//   Then we compute recall@5 against expected_top_k for THREE orderings:
 //     - recency baseline: timestamp DESC
+//     - live baseline: a faithful replication of what src/context.js ALREADY
+//       does on its current-belief reads (tier rank ASC, then id DESC) over the
+//       same candidate set. This is the ordering rerank would REPLACE, so it is
+//       the real bar: beating recency is not enough to justify wiring rerank live.
 //     - rerank: rank.js's rankCandidates (importance/usage/recency/relevance)
 //
 // ASSERTIONS
 //   (a) DISCRIMINATION: aggregate rerank recall@5 across the 8 queries is
 //       STRICTLY GREATER than the recency baseline's. If rerank cannot beat
-//       recency, the feature is not justified.
+//       recency, the feature is not justified. (Kept on RECENCY only.)
 //   (b) GUARDRAIL: every time_sensitive entry the recency baseline put in a
 //       query's top-5 also appears in rerank's top-5 (do not bury a live hotfix).
-//   (c) we print per-query recall@5 for both orderings.
+//   (c) we print a three-way per-query + aggregate recall@5 table.
+//   (d) we REPORT rerank vs the live baseline (beats / ties / loses, aggregate +
+//       per-query regressions). This is NOT force-asserted: the point of the eval
+//       is to find the answer, so faking an assertion would defeat it.
 
 const { describe, it, after, before } = require('node:test');
 const assert = require('node:assert/strict');
@@ -135,6 +142,37 @@ function recencyOrder(candidates) {
   });
 }
 
+// LIVE baseline ordering: a faithful replication of what src/context.js ALREADY
+// does on its current-belief reads, applied to the SAME candidate set (current +
+// on-topic). This is the ordering rerank would REPLACE, so it is the bar rerank
+// must clear to justify wiring it live. Beating recency is not enough.
+//
+// What context.js does (verbatim sources in the repo at the eval branch):
+//   contextFull / contextAsOf (SQL):
+//     ORDER BY CASE tier WHEN 'foundation' THEN 0 WHEN 'component' THEN 1
+//              WHEN 'detail' THEN 2 WHEN 'fleeting' THEN 3 ELSE 4 END, id DESC
+//   contextTopic (JS sort over the combined foundation+component+detail set):
+//     tierOrder {foundation:0, component:1, detail:2} else 3, then b.id - a.id
+// Both reduce to the same rule: tier rank ASC, then id DESC. contextTopic is the
+// read most comparable to a ranked "what is relevant on this topic" retrieval
+// (it is the --topic path), so its ordering is the one replicated here. The tier
+// map below matches the SQL CASE exactly (fleeting=3, unknown=4) so any tier in
+// the candidate set is ordered the way the live path would order it.
+const LIVE_TIER_RANK = { foundation: 0, component: 1, detail: 2, fleeting: 3 };
+
+function liveTierRank(tier) {
+  return LIVE_TIER_RANK[tier] !== undefined ? LIVE_TIER_RANK[tier] : 4;
+}
+
+function liveOrder(candidates) {
+  return candidates.slice().sort((a, b) => {
+    const ra = liveTierRank(a.tier);
+    const rb = liveTierRank(b.tier);
+    if (ra !== rb) return ra - rb; // tier rank ascending
+    return b.id - a.id;            // then id DESC, exactly like context.js
+  });
+}
+
 describe('rerank score vs audited fixture', () => {
   before(() => {
     corpus = loadCorpus();
@@ -149,19 +187,28 @@ describe('rerank score vs audited fixture', () => {
     const now = corpus.now; // freeze recency to the fixture's NOW
     const rows = [];
     let sumRecency = 0;
+    let sumLive = 0;
     let sumRerank = 0;
     let guardrailViolations = [];
+    let rerankRegressionsVsLive = []; // queries where rerank < live (reported, not asserted)
 
     for (const q of corpus.queries) {
       const candidates = candidatesForTopic(q.topic);
 
       const recencyTop = recencyOrder(candidates).slice(0, K).map(e => e.id);
+      const liveTop = liveOrder(candidates).slice(0, K).map(e => e.id);
       const rerankTop = rankCandidates(candidates, { now }).slice(0, K).map(e => e.id);
 
       const rRec = recall(recencyTop, q.expected_top_k);
+      const rLive = recall(liveTop, q.expected_top_k);
       const rRr = recall(rerankTop, q.expected_top_k);
       sumRecency += rRec;
+      sumLive += rLive;
       sumRerank += rRr;
+
+      if (rRr < rLive) {
+        rerankRegressionsVsLive.push({ query: q.id, live: rLive, rerank: rRr });
+      }
 
       // Guardrail: a time_sensitive entry the recency baseline surfaced in its
       // top-5 must also be in rerank's top-5.
@@ -177,34 +224,59 @@ describe('rerank score vs audited fixture', () => {
         query: q.id,
         expected: q.expected_top_k.length,
         recency: rRec,
+        live: rLive,
         rerank: rRr,
         recencyTop,
+        liveTop,
         rerankTop,
       });
     }
 
     const aggRecency = sumRecency / corpus.queries.length;
+    const aggLive = sumLive / corpus.queries.length;
     const aggRerank = sumRerank / corpus.queries.length;
 
-    // (c) print per-query recall@5 for both orderings
+    // (c) THREE-WAY per-query recall@5: recency vs live (tier-then-id) vs rerank.
     console.log('\n  rerank evaluation (recall@5, K=' + K + ', NOW=' + corpus.now + ')');
-    console.log('  query           | expected | recency | rerank');
-    console.log('  ----------------|----------|---------|-------');
+    console.log('  three-way: RECENCY (timestamp DESC) | LIVE (context.js tier-then-id) | RERANK (rank.js)');
+    console.log('  query           | expected | recency |   live | rerank');
+    console.log('  ----------------|----------|---------|--------|-------');
     for (const r of rows) {
       console.log(
         '  ' + r.query.padEnd(15) +
         ' | ' + String(r.expected).padStart(8) +
         ' | ' + r.recency.toFixed(3).padStart(7) +
+        ' | ' + r.live.toFixed(3).padStart(6) +
         ' | ' + r.rerank.toFixed(3).padStart(6)
       );
     }
-    console.log('  ----------------|----------|---------|-------');
+    console.log('  ----------------|----------|---------|--------|-------');
     console.log(
       '  ' + 'AGGREGATE'.padEnd(15) +
       ' | ' + ''.padStart(8) +
       ' | ' + aggRecency.toFixed(3).padStart(7) +
+      ' | ' + aggLive.toFixed(3).padStart(6) +
       ' | ' + aggRerank.toFixed(3).padStart(6)
     );
+    console.log('');
+
+    // (d) VERDICT: rerank vs the LIVE baseline (the bar that actually matters).
+    // REPORTED, not force-asserted — we do not know the answer in advance and must
+    // not fake it. The discrimination assertion below stays on recency only.
+    const delta = aggRerank - aggLive;
+    let verdict;
+    if (delta > 1e-9) verdict = 'BEATS';
+    else if (delta < -1e-9) verdict = 'LOSES TO';
+    else verdict = 'TIES';
+    console.log('  rerank vs LIVE (tier-then-id): rerank ' + verdict + ' live ' +
+      '(rerank ' + aggRerank.toFixed(3) + ' vs live ' + aggLive.toFixed(3) +
+      ', delta ' + (delta >= 0 ? '+' : '') + delta.toFixed(3) + ')');
+    if (rerankRegressionsVsLive.length > 0) {
+      console.log('  rerank REGRESSES below live on ' + rerankRegressionsVsLive.length + ' query(ies): ' +
+        rerankRegressionsVsLive.map(r => r.query + ' (live ' + r.live.toFixed(3) + ' > rerank ' + r.rerank.toFixed(3) + ')').join(', '));
+    } else {
+      console.log('  rerank never regresses below live on any single query.');
+    }
     console.log('');
 
     // (b) GUARDRAIL
