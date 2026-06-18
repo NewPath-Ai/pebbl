@@ -78,6 +78,35 @@ function narrative(args) {
   const { flags, positional } = parseArgs(args);
   const pebblDir = requirePebblDir();
 
+  // --refresh: re-link foundation refs and re-stamp the timestamp WITHOUT
+  // rewriting the narrative body. Gives the drift nag a real, non-destructive
+  // remedy. Must run before the show/empty guard so it isn't swallowed.
+  if (flags.refresh) {
+    const existing = readNarrative(pebblDir);
+    if (!existing) {
+      console.error('No narrative to refresh. Set one first with: pebbl narrative "..."');
+      process.exit(1);
+    }
+    // Preserve the current body verbatim; only refs + timestamp change.
+    const text = existing
+      .replace(/^# Project Narrative\s*\n*/m, '')
+      .replace(/<!--.*?-->\s*/g, '')
+      .trim();
+    const { openDb } = require('./db');
+    const db = openDb(pebblDir);
+    const foundationEntries = db.prepare(
+      "SELECT id FROM logs WHERE tier = 'foundation' ORDER BY id"
+    ).all();
+    const refs = foundationEntries.map(e => e.id);
+    writeNarrative(pebblDir, text, refs);
+    if (refs.length > 0) {
+      console.log(`Narrative refreshed. Re-linked to ${refs.length} foundation entries.`);
+    } else {
+      console.log('Narrative refreshed.');
+    }
+    return;
+  }
+
   if (flags.show || (positional.length === 0 && !flags.generate)) {
     const content = readNarrative(pebblDir);
     if (content) {
@@ -108,6 +137,26 @@ function narrative(args) {
   if (!text) {
     console.error('Usage: pebbl narrative "Your project description"');
     process.exit(1);
+  }
+
+  // Trap guard: an unknown flag like `--refresh` is fail-open parsed into
+  // positional text. If the sole token looks like a flag, refuse rather than
+  // silently overwriting the narrative with the literal flag string.
+  // This guard lives HERE (the SET branch), NOT in writeNarrative — updateRefs
+  // reuses writeNarrative with legitimately short bodies and must not be blocked.
+  if (positional.length === 1 && positional[0].startsWith('--')) {
+    console.error(`pebbl: '${positional[0]}' is not a valid narrative — looks like an unknown flag.`);
+    console.error('Did you mean: pebbl narrative --refresh   (re-link refs, keep text)');
+    console.error('Or set text:  pebbl narrative "Your project description"');
+    process.exit(1);
+  }
+
+  // Back up an existing meaningful narrative before overwriting, so an
+  // accidental overwrite is recoverable from narrative.md.bak.
+  const existingBody = readNarrative(pebblDir);
+  if (existingBody) {
+    const bakPath = getNarrativePath(pebblDir) + '.bak';
+    fs.writeFileSync(bakPath, fs.readFileSync(getNarrativePath(pebblDir), 'utf8'));
   }
 
   // Collect foundation entry refs
