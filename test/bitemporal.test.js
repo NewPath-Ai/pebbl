@@ -17,6 +17,7 @@ const os = require('os');
 const Database = require('better-sqlite3');
 const { migrate, getVersion } = require('../src/migrate');
 const { openDb, notCorrected, validAsOf } = require('../src/db');
+const log = require('../src/log');
 const { printHistory } = require('../src/log');
 
 let dirs = [];
@@ -73,6 +74,34 @@ function capture(fn) {
   console.log = (...a) => lines.push(a.join(' '));
   try { fn(); } finally { console.log = orig; }
   return lines.join('\n');
+}
+
+// Run the real `pebbl log` CLI (src/log.js) against a .pebbl dir, capturing its
+// stderr and intercepting process.exit so a non-zero exit becomes an assertable
+// value instead of killing the test runner. Returns { exitCode, stderr }; a
+// thrown ExitSignal short-circuits the rest of log() exactly as a real exit
+// would, so nothing after an exit point runs (no insert / markdown append).
+class ExitSignal extends Error {}
+function runLogCli(pebblDir, args) {
+  const dir = path.dirname(pebblDir);
+  const origCwd = process.cwd();
+  const origExit = process.exit;
+  const origErr = console.error;
+  const errLines = [];
+  let exitCode = 0;
+  process.chdir(dir);
+  process.exit = (code) => { exitCode = code || 0; throw new ExitSignal(); };
+  console.error = (...a) => errLines.push(a.join(' '));
+  try {
+    log(args);
+  } catch (e) {
+    if (!(e instanceof ExitSignal)) throw e;
+  } finally {
+    process.chdir(origCwd);
+    process.exit = origExit;
+    console.error = origErr;
+  }
+  return { exitCode, stderr: errLines.join('\n') };
 }
 
 describe('bitemporal migration (v0.5)', () => {
@@ -213,5 +242,45 @@ describe('log --history', () => {
     assert.match(out, /current/);            // the tail of the chain is current
     assert.match(out, /superseded/);         // earlier links are stamped superseded
     assert.match(out, /3 links/);            // root → current, linear
+  });
+});
+
+describe('log --corrects on an already-superseded entry (split-brain guard)', () => {
+  it('refuses the second correction, names the head, and leaves exactly one current belief', () => {
+    const dir = tmpDir();
+    const pebblDir = path.join(dir, '.pebbl');
+    fs.mkdirSync(pebblDir);
+    // openDb creates+migrates the schema so the real log() CLI can write to it.
+    openDb(pebblDir).close();
+
+    // #1: original belief on topic 'auth'.
+    const r1 = runLogCli(pebblDir, ['use sessions', '--cat', 'decision', '--topic', 'auth']);
+    assert.strictEqual(r1.exitCode, 0);
+    // #2: correct #1. This stamps #1 and #2 becomes the head (the current belief).
+    const r2 = runLogCli(pebblDir, ['use JWT', '--cat', 'decision', '--topic', 'auth', '--corrects', '1']);
+    assert.strictEqual(r2.exitCode, 0);
+
+    const db = openDb(pebblDir);
+    // Sanity: after the valid first correction there is exactly one current
+    // belief (the head #2).
+    const afterFirst = db.prepare(`SELECT id FROM logs WHERE ${notCorrected()} ORDER BY id`).all();
+    assert.deepStrictEqual(afterFirst.map(r => r.id), [2]);
+    const countBefore = db.prepare('SELECT COUNT(*) AS c FROM logs').get().c;
+
+    // Attempt to correct #1 AGAIN. #1 is already superseded, so this must be
+    // refused: no new live entry, exactly ONE current belief remains (#2).
+    const r3 = runLogCli(pebblDir, ['use OAuth', '--cat', 'decision', '--topic', 'auth', '--corrects', '1']);
+    assert.notStrictEqual(r3.exitCode, 0);                    // exits non-zero
+    assert.match(r3.stderr, /already superseded by #2/);       // names the head #2
+    assert.match(r3.stderr, /--corrects 2/);                   // suggests the head
+
+    // No row was inserted by the refused correction.
+    const countAfter = db.prepare('SELECT COUNT(*) AS c FROM logs').get().c;
+    assert.strictEqual(countAfter, countBefore);
+
+    // Exactly one current belief for the topic, and it is the head #2.
+    const current = db.prepare(`SELECT id FROM logs WHERE ${notCorrected()} ORDER BY id`).all();
+    assert.deepStrictEqual(current.map(r => r.id), [2]);
+    db.close();
   });
 });
