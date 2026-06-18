@@ -25,10 +25,23 @@ const { withLock } = require('./lock');
 const { fold, foldFull } = require('./fold');
 
 const EVENTS_FILE = 'events.jsonl';
+// P5 — the PRIVATE half of the two-file split. `events.jsonl` is committed
+// (shared, git-transported); `events.local.jsonl` is ALWAYS gitignored and
+// never leaves the machine. The fold reads BOTH and unions; git only ever
+// carries the shared file. Foundation-tier entries route here by default on a
+// public remote (private-by-default), unless `--share` opts them into the
+// shared file. This is the documented P5 read-split seam: P1 left readEvents
+// single-file, so P5 adds the second-file read at the read entry ONLY — the
+// reducer (fold.js) is untouched, it still just receives an events[] array.
+const LOCAL_EVENTS_FILE = 'events.local.jsonl';
 const ENVELOPE_VERSION = 1;
 
 function eventsPath(pebblDir) {
   return path.join(pebblDir, EVENTS_FILE);
+}
+
+function localEventsPath(pebblDir) {
+  return path.join(pebblDir, LOCAL_EVENTS_FILE);
 }
 
 // actor = <git user.email-short>@<hostname>. The author+source dimension
@@ -153,22 +166,21 @@ function repairTrailingNewline(file) {
 
 // Append a single event as one LF-terminated JSON line. Low-level: assumes
 // the caller already holds the store lock. Repairs a torn final line first
-// so the new line is always its own diff hunk.
-function appendEvent(pebblDir, event) {
-  const file = eventsPath(pebblDir);
+// so the new line is always its own diff hunk. `opts.local` targets the PRIVATE
+// events.local.jsonl (P5 private-by-default) instead of the shared file; the
+// trailing-newline / torn-line invariant (P0) applies to BOTH files identically.
+function appendEvent(pebblDir, event, opts = {}) {
+  const file = opts.local ? localEventsPath(pebblDir) : eventsPath(pebblDir);
   repairTrailingNewline(file);
   const line = JSON.stringify(event) + '\n';
   fs.appendFileSync(file, line);
   return event;
 }
 
-// Read events.jsonl into parsed objects. Skips blank lines. A torn final
-// line (no trailing newline) is tolerated on read — JSON.parse still
-// succeeds on a complete-but-unterminated object; we just don't let it
-// stay torn when we next append. Throws on a genuinely malformed line so
-// corruption is loud, never silent.
-function readEvents(pebblDir) {
-  const file = eventsPath(pebblDir);
+// Parse one events file into objects. Skips blank lines. A torn final line is
+// tolerated on read. Throws on a genuinely malformed line so corruption is loud.
+// Missing file => []. Shared by readEvents for each half of the split.
+function readEventsFile(file) {
   let raw;
   try {
     raw = fs.readFileSync(file, 'utf8');
@@ -190,6 +202,21 @@ function readEvents(pebblDir) {
   return events;
 }
 
+// Read the FULL event stream: the shared events.jsonl UNIONed with the private
+// events.local.jsonl (P5 two-file split). The fold sorts by (ts, emitted_at,
+// eid), so concatenation order doesn't matter — local + shared events interleave
+// deterministically and the local entries surface in the view exactly like
+// shared ones. git only ever transports the shared file; the local file is
+// machine-private. eids are globally unique, so there's no collision risk in
+// the union. This is the ONLY change the split needs on the read side — the
+// reducer in fold.js is untouched.
+function readEvents(pebblDir) {
+  const shared = readEventsFile(eventsPath(pebblDir));
+  const local = readEventsFile(localEventsPath(pebblDir));
+  if (local.length === 0) return shared;
+  return shared.concat(local);
+}
+
 // Deterministic fold: events[] -> view rows. As of P1 the real reducer lives
 // in src/fold.js (full 8-type event set, supersession hiding, eid->local-int
 // FK translation, the view.sqlite + markdown emitters). It is imported above
@@ -204,10 +231,14 @@ function readEvents(pebblDir) {
 // because the view-rebuild target (markdown/sqlite projection) lives there;
 // keeping fold/append decoupled from the projection keeps this module
 // reusable for later phases. Returns { event, rows }.
-function appendLogEvent(pebblDir, fields, rebuild) {
+function appendLogEvent(pebblDir, fields, rebuild, opts = {}) {
   return withLock(pebblDir, () => {
     const event = makeAppendEvent(pebblDir, fields);
-    appendEvent(pebblDir, event);
+    // P5: a private entry (foundation, private-by-default on a public remote,
+    // no --share) is appended to events.local.jsonl; everything else to the
+    // shared events.jsonl. The fold reads BOTH via readEvents, so the row shows
+    // up in the view either way — only the git-transport side differs.
+    appendEvent(pebblDir, event, { local: !!opts.local });
     const rows = fold(readEvents(pebblDir));
     if (typeof rebuild === 'function') rebuild(rows);
     return { event, rows };
@@ -237,8 +268,11 @@ function appendEventBatch(pebblDir, events, rebuild) {
 
 module.exports = {
   EVENTS_FILE,
+  LOCAL_EVENTS_FILE,
   ENVELOPE_VERSION,
   eventsPath,
+  localEventsPath,
+  readEventsFile,
   resolveActor,
   makeEnvelope,
   makeAppendEvent,

@@ -7,7 +7,25 @@ const { openDb } = require('./db');
 const { qmdUpdateDeferred } = require('./qmd');
 const { loadRubric, classifyEntry, ensureProjectFiles } = require('./rubric');
 const { isThinEntry } = require('./detect-thin');
+const { execFileSync } = require('child_process');
 const { appendLogEvent } = require('./events');
+const { detectRemoteVisibility } = require('./privacy-scan');
+
+// P5 — foundation private-by-default (design Q3=B). Decide whether THIS entry's
+// event goes to the PRIVATE events.local.jsonl (machine-only) or the SHARED
+// events.jsonl (git-transported). Pure + testable: the visibility string is
+// passed in. Rule:
+//   - Only FOUNDATION-tier entries are ever private-by-default.
+//   - That default applies ONLY on a PUBLIC remote (Q3=B — a private repo is
+//     already the trust boundary, so foundation shares freely there).
+//   - `--share` overrides the default and forces the SHARED file even on public.
+// So: route local  <=>  tier === 'foundation' && visibility === 'public' && !share.
+// On 'private' or 'unknown' visibility, foundation shares freely (returns false).
+function shouldRouteLocal({ tier, share, visibility }) {
+  if (tier !== 'foundation') return false;     // only foundation is private-by-default
+  if (share) return false;                     // explicit opt-in to shared
+  return visibility === 'public';              // private-by-default on public only
+}
 
 const VALID_CATEGORIES = [
   'decision', 'structure', 'pattern', 'data', 'integration', 'quality',
@@ -277,10 +295,25 @@ module.exports = function log(args) {
   // concurrent local write can't interleave. db.sqlite remains the source
   // of truth; this proves the committed-text path end to end alongside it.
   try {
+    // P5 routing: a foundation entry on a PUBLIC remote is private-by-default
+    // (lands in events.local.jsonl, gitignored) unless --share is passed. On a
+    // private/unknown remote, foundation shares freely (Q3=B). Visibility is
+    // detected from the git remote; the detection is cheap and best-effort.
+    const repoRoot = path.dirname(path.resolve(pebblDir));
+    const vis = detectRemoteVisibility((a) => {
+      try {
+        return execFileSync('git', a, { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch { return ''; }
+    });
+    const local = shouldRouteLocal({ tier, share: !!flags.share, visibility: vis.visibility });
+    if (local) {
+      console.error('pebbl: foundation entry kept PRIVATE (events.local.jsonl) — public remote, no --share. Use --share to publish.');
+    }
     appendLogEvent(
       pebblDir,
       { ts, category, tier, message, topics },
       (rows) => rebuildEventsView(pebblDir, rows),
+      { local },
     );
   } catch (err) {
     // Never let the new additive path break the existing, canonical write.
@@ -341,3 +374,4 @@ function displayEntry(e) {
 }
 
 module.exports.displayEntry = displayEntry;
+module.exports.shouldRouteLocal = shouldRouteLocal;

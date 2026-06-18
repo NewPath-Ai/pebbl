@@ -59,6 +59,50 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 exit 0
 `;
 
+// P5 — the pre-commit / pre-push secret-scan hooks. The forward gate (design
+// Privacy line 41: "scan in git PRE-COMMIT and PRE-PUSH on every commit, not
+// one-shot at init"). The hook shells into THIS pebbl's `privacy-scan` and exits
+// non-zero on a hit, refusing the commit/push.
+//
+// Pebbl RESOLUTION is the subtle part. We bake in the ABSOLUTE path of the
+// bin/pebbl.js that ran `init` (resolved below), invoked via `node`, so the hook
+// always calls the exact pebbl that installed it — independent of $PATH. That
+// matters because a DIFFERENT pebbl might be first on $PATH (e.g. a globally
+// installed build that predates the `privacy-scan` command); calling it would
+// error "unknown command" and wrongly BLOCK every commit. So:
+//   1. the pinned `node <installing-bin> privacy-scan` if that bin still exists,
+//   2. else a repo-local node_modules/.bin/pebbl,
+//   3. else a PATH `pebbl` ONLY IF it understands `privacy-scan` (probed),
+//   4. else exit 0 (allow) — a hook that hard-fails on a missing/old binary
+//      would block every commit and get deleted; audit-history is the backstop.
+// PEBBL_SKIP_SCAN=1 is an explicit operator escape hatch.
+function hookScript(mode, pinnedBin) {
+  // mode: '--staged' (pre-commit) or '--push' (pre-push).
+  const human = mode === '--push'
+    ? 'pre-push secret/PII scan + public-repo hard gate. A PUBLIC remote blocks the\n# push until `pebbl audit-history` is clean (clears once clean; re-applies on a\n# once-private remote going public).'
+    : 'pre-commit secret/PII scan. Refuses a commit that would write a non-RFC1918\n# IP+port, a credential file path, a token shape, or a denylisted name into\n# shared, append-only memory (which can never un-leak it).';
+  // pinnedBin is embedded as a shell-safe single-quoted literal.
+  const pin = String(pinnedBin).replace(/'/g, `'\\''`);
+  return `#!/bin/sh
+# pebbl P5: ${human}
+[ -n "$PEBBL_SKIP_SCAN" ] && exit 0
+PINNED='${pin}'
+if [ -n "$PINNED" ] && [ -f "$PINNED" ]; then
+  exec node "$PINNED" privacy-scan ${mode}
+fi
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+if [ -x "$ROOT/node_modules/.bin/pebbl" ]; then
+  exec "$ROOT/node_modules/.bin/pebbl" privacy-scan ${mode}
+fi
+# A PATH pebbl is used ONLY if it understands privacy-scan (an older global
+# build that doesn't would otherwise hard-block every commit).
+if command -v pebbl >/dev/null 2>&1 && pebbl help privacy-scan >/dev/null 2>&1; then
+  exec pebbl privacy-scan ${mode}
+fi
+exit 0
+`;
+}
+
 function init() {
   const cwd = process.cwd();
   const pebblDir = path.join(cwd, '.pebbl');
@@ -113,23 +157,45 @@ function init() {
     writeHook('post-merge', REBUILD_HOOK_SCRIPT);
     writeHook('post-checkout', REBUILD_HOOK_SCRIPT);
     console.log('Installed post-merge and post-checkout rebuild hooks');
+    // P5: pre-commit + pre-push secret/PII scanner, installed ADDITIVELY
+    // alongside the hooks above (a forward gate runs on every commit/push, not
+    // one-shot at init). These do NOT replace the post-* hooks. The hook pins
+    // the ABSOLUTE path of THIS bin/pebbl.js so it always runs the pebbl that
+    // installed it, not whatever pebbl happens to be first on $PATH.
+    const pinnedBin = path.resolve(__dirname, '..', 'bin', 'pebbl.js');
+    writeHook('pre-commit', hookScript('--staged', pinnedBin));
+    writeHook('pre-push', hookScript('--push', pinnedBin));
+    console.log('Installed pre-commit and pre-push privacy-scan hooks');
   } else {
     console.log('No .git/ found — skipping git hooks (run inside a git repo to enable).');
   }
 
   // .gitignore
+  // Two lines, both ADDITIVE and idempotent:
+  //  - `.pebbl/`              today's default: the whole store is local (the
+  //                           DEFAULT=LOCAL behavior). db.sqlite/view.sqlite are
+  //                           always disposable and never committed.
+  //  - `.pebbl/events.local.jsonl`  P5: the PRIVATE half of the two-file split.
+  //                           This file is ALWAYS gitignored, even once a store
+  //                           goes --shared (when the `.pebbl/` blanket ignore is
+  //                           relaxed for events.jsonl, this explicit line keeps
+  //                           the local/private events out of git transport).
   const gitignore = path.join(cwd, '.gitignore');
-  const entry = '.pebbl/\n';
-  if (fs.existsSync(gitignore)) {
-    const existing = fs.readFileSync(gitignore, 'utf8');
-    if (!existing.includes('.pebbl/')) {
-      fs.appendFileSync(gitignore, `\n${entry}`);
-      console.log('Added .pebbl/ to .gitignore');
+  const ensureIgnoreLine = (line, label) => {
+    if (fs.existsSync(gitignore)) {
+      const existing = fs.readFileSync(gitignore, 'utf8');
+      if (!existing.split('\n').some((l) => l.trim() === line)) {
+        const sep = existing.endsWith('\n') || existing === '' ? '' : '\n';
+        fs.appendFileSync(gitignore, `${sep}${line}\n`);
+        console.log(`Added ${label} to .gitignore`);
+      }
+    } else {
+      fs.writeFileSync(gitignore, `${line}\n`);
+      console.log(`Created .gitignore with ${label}`);
     }
-  } else {
-    fs.writeFileSync(gitignore, entry);
-    console.log('Created .gitignore with .pebbl/');
-  }
+  };
+  ensureIgnoreLine('.pebbl/', '.pebbl/');
+  ensureIgnoreLine('.pebbl/events.local.jsonl', '.pebbl/events.local.jsonl (private events)');
 
   // .gitattributes — install the union merge driver for events.jsonl.
   // MANDATORY for clean multi-contributor merge: without `merge=union`,
