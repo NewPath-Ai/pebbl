@@ -1,7 +1,7 @@
 'use strict';
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openDb, topicFilter } = require('./db');
+const { openDb, topicFilter, notCorrected } = require('./db');
 const { qmdAvailable, qmdQuery } = require('./qmd');
 const { displayEntry } = require('./log');
 const { ensureProjectFiles, loadConfig } = require('./rubric');
@@ -234,7 +234,11 @@ function searchSqlite(pebblDir, query, cat, topic, mirrorResults, sourceResults)
   const messageClause = terms.length
     ? terms.map(() => 'message LIKE ?').join(' AND ')
     : '1=1';
-  let sql = `SELECT timestamp, source, category, tier, message, topics FROM logs WHERE tier != 'archived' AND ${messageClause}`;
+  // Bi-temporal (v0.5): search surfaces the CURRENT belief only — superseded
+  // entries are excluded by the same `valid_to IS NULL` predicate the context
+  // read sites use (one definition, via notCorrected()), instead of the old
+  // hide-by-subquery. Their history stays reachable via `pebbl log --history`.
+  let sql = `SELECT timestamp, source, category, tier, message, topics FROM logs WHERE tier != 'archived' AND ${notCorrected()} AND ${messageClause}`;
   const params = terms.map(t => `%${t}%`);
 
   if (cat) {

@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openDb, topicFilter } = require('./db');
+const { openDb, topicFilter, validAsOf } = require('./db');
 const { buildGroups } = require('./compact');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { displayEntry } = require('./log');
@@ -290,7 +290,7 @@ function contextDefault(pebblDir, db) {
     FROM logs
     WHERE tier IN ('foundation', 'component')
       AND topics IS NOT NULL AND topics != ''
-      AND id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL)
+      AND valid_to IS NULL
     GROUP BY topics, tier
     ORDER BY last_updated DESC
   `).all();
@@ -343,7 +343,7 @@ function contextDefault(pebblDir, db) {
     SELECT id, timestamp, source, category, tier, message, topics
     FROM logs
     WHERE tier IN ('foundation', 'component', 'detail')
-      AND id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL)
+      AND valid_to IS NULL
     ORDER BY id DESC
     LIMIT 5
   `).all();
@@ -373,7 +373,7 @@ function contextFull(pebblDir, db, flags) {
 
   showOpenHandoff(db, pebblDir);
 
-  let sql = 'SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL) AND 1=1';
+  let sql = 'SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE valid_to IS NULL AND 1=1';
   const params = [];
 
   if (flags.cat) {
@@ -421,21 +421,21 @@ function contextTopic(pebblDir, db, topic, flags) {
   const filter = topicFilter(topic);
 
   // 1. ALL foundation entries (regardless of topic)
-  let sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'foundation' AND id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL)`;
+  let sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'foundation' AND valid_to IS NULL`;
   const fParams = [];
   if (flags.cat) { sql += ' AND category = ?'; fParams.push(flags.cat); }
   sql += ' ORDER BY id DESC';
   const foundationRows = db.prepare(sql).all(...fParams);
 
   // 2. ALL component entries matching the topic
-  sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'component' AND id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL) ${filter.clause}`;
+  sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'component' AND valid_to IS NULL ${filter.clause}`;
   const cParams = [...filter.params];
   if (flags.cat) { sql += ' AND category = ?'; cParams.push(flags.cat); }
   sql += ' ORDER BY id DESC';
   const componentRows = db.prepare(sql).all(...cParams);
 
   // 3. Recent detail entries matching the topic (limit 5)
-  sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'detail' AND id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL) ${filter.clause}`;
+  sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'detail' AND valid_to IS NULL ${filter.clause}`;
   const dParams = [...filter.params];
   if (flags.cat) { sql += ' AND category = ?'; dParams.push(flags.cat); }
   sql += ' ORDER BY id DESC LIMIT 5';
@@ -464,6 +464,43 @@ function contextTopic(pebblDir, db, topic, flags) {
   showCompactionNotifications(db, pebblDir);
 }
 
+// ── mode: as-of (bi-temporal point-in-time, activated via --as-of) ──────────
+//
+// Memory as it was BELIEVED on a given date. Unlike the default/topic/full
+// views (which show only valid_to IS NULL — the current belief), this returns
+// the rows whose validity interval covers <date>: started on/before it and not
+// yet superseded as of it. This is how the timeline survives a correction —
+// the superseded belief reappears when you ask about a date before it stopped.
+function contextAsOf(pebblDir, db, date, flags) {
+  const cwd = process.cwd();
+  let sql = `SELECT id, timestamp, source, category, tier, message, topics
+             FROM logs
+             WHERE ${validAsOf()}`;
+  const params = [date, date];
+
+  if (flags.cat)    { sql += ' AND category = ?'; params.push(flags.cat); }
+  if (flags.tier)   { sql += ' AND tier = ?';     params.push(flags.tier); }
+  if (flags.source) { sql += ' AND source = ?';   params.push(flags.source); }
+  if (flags.topic) {
+    const filter = topicFilter(flags.topic);
+    sql += ' ' + filter.clause;
+    params.push(...filter.params);
+  }
+  sql += ` ORDER BY CASE tier WHEN 'foundation' THEN 0 WHEN 'component' THEN 1 WHEN 'detail' THEN 2 WHEN 'fleeting' THEN 3 ELSE 4 END, id DESC LIMIT 20`;
+
+  const rows = db.prepare(sql).all(...params);
+
+  console.log(`--- MEMORY AS OF ${date} ---`);
+  if (rows.length === 0) {
+    console.log('(nothing was believed as of that date)');
+  } else {
+    for (const row of rows) {
+      showEntryWithThinCheck(row, cwd);
+    }
+  }
+  console.log('---');
+}
+
 // ── exported entry point ─────────────────────────────────────────────────────
 
 module.exports = function context(args) {
@@ -475,7 +512,9 @@ module.exports = function context(args) {
   // Check raw args for --full since it is not in KNOWN_FLAGS
   const isFull = args.includes('--full');
 
-  if (isFull) {
+  if (flags['as-of']) {
+    contextAsOf(pebblDir, db, flags['as-of'], flags);
+  } else if (isFull) {
     contextFull(pebblDir, db, flags);
   } else if (flags.topic) {
     contextTopic(pebblDir, db, flags.topic, flags);

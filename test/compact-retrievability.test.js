@@ -19,7 +19,7 @@ function db() {
   d.exec(`CREATE TABLE logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'human', category TEXT NOT NULL DEFAULT 'uncategorized',
     tier TEXT NOT NULL DEFAULT 'detail', message TEXT NOT NULL, topics TEXT,
-    relates_to INTEGER, corrects INTEGER);`);
+    relates_to INTEGER, corrects INTEGER, valid_from TEXT, valid_to TEXT, invalidated_by INTEGER);`);
   return { dir, d, ins: d.prepare('INSERT INTO logs (timestamp,source,category,tier,message,topics) VALUES (?,?,?,?,?,?)') };
 }
 
