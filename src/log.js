@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { parseArgs } = require('./args');
+const { parseArgs, assertCompleteFlags, assertIntegerFlags } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
 const { qmdUpdate } = require('./qmd');
@@ -42,7 +42,13 @@ function formatEntry(timestamp, message, category, tier, source, topics) {
 }
 
 module.exports = function log(args) {
-  const { flags, positional } = parseArgs(args);
+  const parsed = parseArgs(args);
+  // A value-flag given without a value (e.g. `--corrects --cat decision`) must
+  // error, not silently drop — a lost --corrects leaves the contradicted entry
+  // live. Likewise --corrects/--relates must be integer entry IDs, not NULL.
+  assertCompleteFlags(parsed);
+  assertIntegerFlags(parsed, ['corrects', 'relates']);
+  const { flags, positional } = parsed;
 
   const message = positional.join(' ').trim();
   if (!message) {
