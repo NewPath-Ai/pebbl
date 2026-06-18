@@ -146,7 +146,11 @@ Flags:
   --source <source>    human|agent (default: agent)
   --latest             show the most recent handoff
   --list               list recent handoffs
-  --close              close the open handoff (promotes to foundation-tier log)
+  --open               list every open handoff (alias: --list-open)
+  --list-open          list every open handoff
+  --close [id]         close an open handoff (a specific id if given);
+                       session detail entries become compaction-eligible;
+                       done/todo/blocked stay searchable in handoffs.md
 
 Handoffs materialize one block per --done/--todo/--blocked item into
 handoffs.md so each item is independently searchable.

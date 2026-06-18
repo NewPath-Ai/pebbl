@@ -76,22 +76,57 @@ function getNarrativeUpdated(pebblDir) {
 
 // ── shared UI ────────────────────────────────────────────────────────────────
 
-function showOpenHandoff(db) {
+// Whole hours since an ISO timestamp, as a short label. Hour-granularity (the
+// open-handoff staleness signal needs sub-day resolution); relativeDate above
+// is day-granularity and used for the closed-handoff/topic dates, so the two
+// coexist intentionally.
+function hoursAgo(isoTimestamp) {
+  return Math.round((Date.now() - new Date(isoTimestamp).getTime()) / 3600000);
+}
+function hoursAgoText(isoTimestamp) {
+  const ago = hoursAgo(isoTimestamp);
+  return ago < 1 ? 'just now' : `${ago}h ago`;
+}
+
+function showOpenHandoff(db, pebblDir) {
   const hasHandoffsTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='handoffs'").get();
   if (!hasHandoffsTable) return;
 
-  const openHandoff = db.prepare("SELECT * FROM handoffs WHERE status = 'open' ORDER BY id DESC LIMIT 1").get();
-  if (!openHandoff) return;
+  // The handoffs table permits unlimited open rows and creating a handoff never
+  // closes priors, so opens stack. Fetch ALL of them (newest first) rather than
+  // a single LIMIT 1 slot that buries older opens with no count or signal.
+  const opens = db.prepare("SELECT * FROM handoffs WHERE status = 'open' ORDER BY id DESC").all();
+  if (opens.length === 0) return;
 
-  const ago = Math.round((Date.now() - new Date(openHandoff.timestamp).getTime()) / 3600000);
-  const agoText = ago < 1 ? 'just now' : `${ago}h ago`;
-  console.log(`── Open handoff from previous agent (#${openHandoff.id}, ${agoText}) ──`);
-  console.log(openHandoff.summary);
-  if (openHandoff.done)    console.log(`  previous agent completed: ${openHandoff.done}`);
-  if (openHandoff.todo)    console.log(`  remaining for you:        ${openHandoff.todo}`);
-  if (openHandoff.blocked) console.log(`  blocked:                  ${openHandoff.blocked}`);
-  if (openHandoff.topics)  console.log(`  topics:                   ${openHandoff.topics}`);
+  const config = loadConfig(pebblDir) || {};
+  const staleHours = (config.handoff && config.handoff.staleHours) || 48;
+
+  // Render the newest open in full — that is "today's" working handoff.
+  const newest = opens[0];
+  console.log(`── Open handoff from previous agent (#${newest.id}, ${hoursAgoText(newest.timestamp)}) ──`);
+  console.log(newest.summary);
+  if (newest.done)    console.log(`  previous agent completed: ${newest.done}`);
+  if (newest.todo)    console.log(`  remaining for you:        ${newest.todo}`);
+  if (newest.blocked) console.log(`  blocked:                  ${newest.blocked}`);
+  if (newest.topics)  console.log(`  topics:                   ${newest.topics}`);
+  if (hoursAgo(newest.timestamp) >= staleHours) {
+    console.log(`  ⚠ stale: open ${hoursAgo(newest.timestamp)}h (≥ ${staleHours}h threshold)`);
+  }
   console.log('  → when you finish the remaining work, run: pebbl handoff --close');
+
+  // One-line rollup for the rest, so stacked opens are visible and drainable.
+  if (opens.length > 1) {
+    const oldest = opens[opens.length - 1];
+    console.log(
+      `  ⚠ ${opens.length} open handoffs (oldest #${oldest.id}, ${hoursAgo(oldest.timestamp)}h ago) ` +
+      `— run pebbl handoff --list-open`
+    );
+    const stale = opens.filter(h => hoursAgo(h.timestamp) >= staleHours);
+    if (stale.length > 0) {
+      const ids = stale.map(h => `#${h.id}`).join(', ');
+      console.log(`  ⚠ ${stale.length} stale (≥ ${staleHours}h): ${ids}`);
+    }
+  }
   console.log('──');
   console.log('');
 }
@@ -215,7 +250,7 @@ function checkDrift(pebblDir, db) {
 function contextDefault(pebblDir, db) {
   const cwd = process.cwd();
 
-  showOpenHandoff(db);
+  showOpenHandoff(db, pebblDir);
 
   // ── Section 1: NARRATIVE ──
 
@@ -336,7 +371,7 @@ function contextDefault(pebblDir, db) {
 function contextFull(pebblDir, db, flags) {
   const cwd = process.cwd();
 
-  showOpenHandoff(db);
+  showOpenHandoff(db, pebblDir);
 
   let sql = 'SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL) AND 1=1';
   const params = [];
@@ -381,7 +416,7 @@ function contextFull(pebblDir, db, flags) {
 function contextTopic(pebblDir, db, topic, flags) {
   const cwd = process.cwd();
 
-  showOpenHandoff(db);
+  showOpenHandoff(db, pebblDir);
 
   const filter = topicFilter(topic);
 

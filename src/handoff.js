@@ -58,15 +58,61 @@ module.exports = function handoff(args) {
     return;
   }
 
-  // Mode 3: --close
-  if (flags.close) {
-    const row = db.prepare(
-      "SELECT * FROM handoffs WHERE status = 'open' ORDER BY id DESC LIMIT 1"
-    ).get();
+  // Mode 2b: --open / --list-open — every open handoff, no LIMIT. Mirrors the
+  // --list block but filters status='open' so stacked opens are drainable.
+  if (flags.open || flags['list-open']) {
+    const rows = db.prepare(
+      "SELECT id, timestamp, summary, topics, status FROM handoffs WHERE status = 'open' ORDER BY id DESC"
+    ).all();
 
-    if (!row) {
-      console.error('pebbl: no open handoff to close');
-      process.exit(1);
+    const mirrored = mirrorHandoffs(pebblDir)
+      .filter(h => h.field === 'summary' && h.status === 'open');
+
+    if (rows.length === 0 && mirrored.length === 0) {
+      console.log('pebbl: no open handoffs');
+      return;
+    }
+
+    for (const row of rows) {
+      const date = (row.timestamp || '').slice(0, 10);
+      const topicStr = row.topics ? ` (${row.topics})` : '';
+      console.log(`#${row.id} [open]  ${date} — ${row.summary}${topicStr}`);
+    }
+    for (const h of mirrored) {
+      const topicStr = h.topics ? ` (${h.topics})` : '';
+      console.log(`[${h.machine}] #${h.handoffId} [open]  ${h.date} — ${stripHandoffPrefix(h.message)}${topicStr}`);
+    }
+    return;
+  }
+
+  // Mode 3: --close [id]. Bare `--close` closes the newest open (back-compat);
+  // `--close <id>` closes a specific open out of order. `--close` is a boolean
+  // flag, so the id arrives as the lone positional.
+  if (flags.close) {
+    const idArg = positional[0];
+    let row;
+    if (idArg !== undefined) {
+      if (!/^\d+$/.test(idArg)) {
+        console.error(`pebbl: handoff --close expects a numeric id, got "${idArg}"`);
+        process.exit(1);
+      }
+      row = db.prepare('SELECT * FROM handoffs WHERE id = ?').get(parseInt(idArg, 10));
+      if (!row) {
+        console.error(`pebbl: no handoff #${idArg}`);
+        process.exit(1);
+      }
+      if (row.status !== 'open') {
+        console.error(`pebbl: handoff #${idArg} is not open (status: ${row.status})`);
+        process.exit(1);
+      }
+    } else {
+      row = db.prepare(
+        "SELECT * FROM handoffs WHERE status = 'open' ORDER BY id DESC LIMIT 1"
+      ).get();
+      if (!row) {
+        console.error('pebbl: no open handoff to close');
+        process.exit(1);
+      }
     }
 
     const ts = new Date().toISOString();
@@ -168,6 +214,12 @@ module.exports = function handoff(args) {
   if (topics) console.log(`Topics: ${topics}`);
   console.log(`Session: ${sessionEntries.length} log entries, ${sessionCommits.length} commits captured`);
   console.log('──');
+  // Close-lifecycle reminder: creating a handoff never closes priors, so opens
+  // stack silently. Nudge the author to drain finished work out of order.
+  console.log(
+    `  → this stays open until closed: pebbl handoff --close ${result.lastInsertRowid} ` +
+    `(see all open: pebbl handoff --list-open)`
+  );
 };
 
 // Split a handoff field into atomic items on ';'.
@@ -287,9 +339,6 @@ function displayHandoff(row, db) {
     if (commitHashes.length > 5) console.log(`  ... and ${commitHashes.length - 5} more`);
   }
 
-  if (row.status === 'closed' && row.promoted_log_id) {
-    console.log(`\nPromoted to log entry #${row.promoted_log_id}`);
-  }
   console.log('══');
 }
 
