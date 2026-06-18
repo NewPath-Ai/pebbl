@@ -4,10 +4,10 @@ const KNOWN_FLAGS = new Set([
   'cat', 'topic', 'source', 'tier', 'scope',
   'relates', 'corrects', 'preview', 'execute', 'resolve',
   'done', 'todo', 'blocked', 'docs', 'latest', 'list', 'close',
-  'show', 'generate',
+  'show', 'generate', 'include-archive', 'deep', 'n', 'refresh',
 ]);
 
-const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'show', 'generate']);
+const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'show', 'generate', 'include-archive', 'deep', 'refresh']);
 
 function parseArgs(args) {
   const flags = {};
@@ -20,6 +20,7 @@ function parseArgs(args) {
       const key = arg.slice(2);
 
       if (!KNOWN_FLAGS.has(key)) {
+        process.stderr.write(`pebbl: unknown flag ${arg} (ignored)\n`);
         positional.push(arg);
         continue;
       }

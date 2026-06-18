@@ -51,6 +51,9 @@ Rules:
   narrative.md       project narrative
   archive/           compacted entries
   qmd/               quote-aware full-text index
+  mirror/<machine>/  other machines' synced memory (read-only — the sync job
+                     owns it; context, search, and handoff --list show these
+                     entries tagged [machine])
 
 db.sqlite is the source of truth. The .md files are projections — regenerable,
 safe to delete (they'll re-materialize on the next pebbl write).`,
@@ -66,6 +69,27 @@ safe to delete (they'll re-materialize on the next pebbl write).`,
 };
 
 const SUBCOMMANDS = {
+  check: `pebbl check — flag entries that cite files that no longer exist
+
+Scans memory for high-confidence path references (a slash + a known
+extension) and reports any entry whose cited file is missing from the repo,
+highest-tier and newest first. Report only — never edits or deletes; it
+points you at \`--corrects\` so you can supersede a wrong entry yourself.
+
+Flags:
+  --deep    also grep the repo for backtick-wrapped symbols (slower, opt-in)
+`,
+  'scan-commits': `pebbl scan-commits — nudge to log decisions never captured
+
+Scans recent commits for decision-shaped changes (the rubric's decision-verb
+patterns) that have NO near-matching entry, and prints a ready-to-edit
+\`pebbl log "..." --cat decision\` line for each. NEVER auto-logs — every line
+is a suggestion you confirm. Dedupes against existing entries so an
+already-logged decision is not re-nudged.
+
+Flags:
+  --n <count>    how many recent commits to scan (default 30)
+`,
   init: `pebbl init — set up .pebbl/ in current project
 
 Creates .pebbl/ with sqlite store, writes PEBBL.md at project root,
@@ -100,6 +124,7 @@ back to 'uncategorized', pebbl prints a loud warning.
 Flags:
   --cat <category>     filter by category
   --topic <topic>      filter by topic
+  --include-archive    also show compacted/archived history (ranked last)
 
 ${CATEGORIES}
 `,
