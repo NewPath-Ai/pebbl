@@ -208,11 +208,42 @@ module.exports = function log(args) {
     console.error(`       pick one: ${VALID_CATEGORIES.join(', ')}`);
   }
 
+  const db = openDb(pebblDir);
+
+  // On --corrects, the target must still be the current belief (valid_to IS
+  // NULL) for the correction to make sense. If it is ALREADY superseded, writing
+  // a new open entry here would create a second live belief on the same chain
+  // (split-brain), because the stamp's `AND valid_to IS NULL` guard refuses to
+  // re-stamp the old target. Detect that case BEFORE inserting anything: follow
+  // the chain from the target via invalidated_by to its live head (the still-
+  // current entry, valid_to IS NULL), tell the user to correct that head
+  // instead, and exit without writing. We do not silently re-target to the head
+  // because that would change what the user asked without telling them.
+  if (corrects != null) {
+    const target = db.prepare('SELECT id, valid_to, invalidated_by FROM logs WHERE id = ?').get(corrects);
+    // A truly missing id keeps the existing not-found behavior (fall through and
+    // insert with a dangling corrects ref). Only the "exists but already
+    // superseded" case is the split-brain we must refuse.
+    if (target && target.valid_to != null) {
+      // Walk forward to the live head: the entry in this chain whose valid_to
+      // is still NULL (same "current belief" notion the reads use).
+      let head = target;
+      const seen = new Set([head.id]);
+      while (head.valid_to != null && head.invalidated_by != null) {
+        const next = db.prepare('SELECT id, valid_to, invalidated_by FROM logs WHERE id = ?').get(head.invalidated_by);
+        if (!next || seen.has(next.id)) break; // guard against cycles / broken links
+        seen.add(next.id);
+        head = next;
+      }
+      console.error(`pebbl: entry #${corrects} is already superseded by #${head.id}; did you mean --corrects ${head.id}?`);
+      process.exit(1);
+    }
+  }
+
   const mdEntry = formatEntry(ts, message, category, tier, source, topics);
   const md = `## ${ts} - ${message}\n${mdEntry.comment}\n\n`;
   fs.appendFileSync(path.join(pebblDir, 'manual-logs.md'), md);
 
-  const db = openDb(pebblDir);
   // Bi-temporal (v0.5): a new entry is the current belief, valid from now with
   // an open valid_to.
   const info = db.prepare(`
@@ -222,20 +253,13 @@ module.exports = function log(args) {
   const newId = Number(info.lastInsertRowid);
 
   // On --corrects, stamp the TARGET's valid_to (when it stopped being true) and
-  // invalidated_by (what replaced it) instead of hiding it. The
-  // `AND valid_to IS NULL` write guard means correcting an ALREADY-superseded
-  // entry does not overwrite the original stamp — so a linear chain A<-B<-C
-  // leaves A's original valid_to intact (B already stamped it).
+  // invalidated_by (what replaced it) instead of hiding it. The target is known
+  // current here (the already-superseded case exited above), so this stamp
+  // always lands on a live row.
   if (corrects != null) {
-    const stamp = db.prepare(
+    db.prepare(
       'UPDATE logs SET valid_to = ?, invalidated_by = ? WHERE id = ? AND valid_to IS NULL'
     ).run(ts, newId, corrects);
-    if (stamp.changes === 0) {
-      const prior = db.prepare('SELECT invalidated_by FROM logs WHERE id = ?').get(corrects);
-      if (prior && prior.invalidated_by != null) {
-        console.error(`pebbl: entry #${corrects} was already superseded by #${prior.invalidated_by}; recording the link but not changing the timeline`);
-      }
-    }
   }
 
   qmdUpdate(pebblDir);

@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openDb, topicFilter, validAsOf } = require('./db');
+const { openDb, topicFilter, validAsOf, notCorrected } = require('./db');
 const { buildGroups } = require('./compact');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { displayEntry } = require('./log');
@@ -290,7 +290,7 @@ function contextDefault(pebblDir, db) {
     FROM logs
     WHERE tier IN ('foundation', 'component')
       AND topics IS NOT NULL AND topics != ''
-      AND valid_to IS NULL
+      AND ${notCorrected()}
     GROUP BY topics, tier
     ORDER BY last_updated DESC
   `).all();
@@ -343,7 +343,7 @@ function contextDefault(pebblDir, db) {
     SELECT id, timestamp, source, category, tier, message, topics
     FROM logs
     WHERE tier IN ('foundation', 'component', 'detail')
-      AND valid_to IS NULL
+      AND ${notCorrected()}
     ORDER BY id DESC
     LIMIT 5
   `).all();
@@ -373,7 +373,7 @@ function contextFull(pebblDir, db, flags) {
 
   showOpenHandoff(db, pebblDir);
 
-  let sql = 'SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE valid_to IS NULL AND 1=1';
+  let sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE ${notCorrected()} AND 1=1`;
   const params = [];
 
   if (flags.cat) {
@@ -421,21 +421,21 @@ function contextTopic(pebblDir, db, topic, flags) {
   const filter = topicFilter(topic);
 
   // 1. ALL foundation entries (regardless of topic)
-  let sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'foundation' AND valid_to IS NULL`;
+  let sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'foundation' AND ${notCorrected()}`;
   const fParams = [];
   if (flags.cat) { sql += ' AND category = ?'; fParams.push(flags.cat); }
   sql += ' ORDER BY id DESC';
   const foundationRows = db.prepare(sql).all(...fParams);
 
   // 2. ALL component entries matching the topic
-  sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'component' AND valid_to IS NULL ${filter.clause}`;
+  sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'component' AND ${notCorrected()} ${filter.clause}`;
   const cParams = [...filter.params];
   if (flags.cat) { sql += ' AND category = ?'; cParams.push(flags.cat); }
   sql += ' ORDER BY id DESC';
   const componentRows = db.prepare(sql).all(...cParams);
 
   // 3. Recent detail entries matching the topic (limit 5)
-  sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'detail' AND valid_to IS NULL ${filter.clause}`;
+  sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'detail' AND ${notCorrected()} ${filter.clause}`;
   const dParams = [...filter.params];
   if (flags.cat) { sql += ' AND category = ?'; dParams.push(flags.cat); }
   sql += ' ORDER BY id DESC LIMIT 5';
