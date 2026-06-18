@@ -64,7 +64,11 @@ function qmdQuery(pebblDir, query) {
     process.exit(1);
   }
   qmdCollectionCreate(pebblDir);
-  const result = spawnSync('qmd', ['search', query, '-c', collectionName(pebblDir)], {
+  // Ask qmd for a wider candidate pool (-n 20) rather than its top-5 default.
+  // The `--cat`/`--topic` filter runs in JS (parseQmdResults) AFTER qmd returns,
+  // so with the default cap a filtered search could discard all 5 hits and
+  // report "No results" even when matches exist further down the ranking.
+  const result = spawnSync('qmd', ['search', query, '-c', collectionName(pebblDir), '-n', '20'], {
     encoding: 'utf8',
   });
   if (result.error) throw result.error;
