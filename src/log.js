@@ -42,14 +42,71 @@ function formatEntry(timestamp, message, category, tier, source, topics) {
   return { comment, out };
 }
 
+// Print the linear supersession chain for one entry. The chain is followed in
+// both directions from the given id: backward via `corrects` to the root
+// belief, then forward via `invalidated_by` to the current one. Each link
+// shows when it stopped being true and what replaced it, so an agent can read
+// the decision's evolution instead of just its latest state.
+function printHistory(pebblDir, id) {
+  const db = openDb(pebblDir);
+  const byId = (n) => db.prepare('SELECT id, timestamp, category, tier, message, corrects, valid_from, valid_to, invalidated_by FROM logs WHERE id = ?').get(n);
+
+  const start = byId(id);
+  if (!start) {
+    console.error(`pebbl: no entry #${id}`);
+    process.exit(1);
+  }
+
+  // Walk backward to the root (the earliest belief this one descends from).
+  let root = start;
+  const seenBack = new Set([root.id]);
+  while (root.corrects != null) {
+    const prev = byId(root.corrects);
+    if (!prev || seenBack.has(prev.id)) break; // guard against cycles
+    seenBack.add(prev.id);
+    root = prev;
+  }
+
+  // Walk forward via invalidated_by, collecting the linear chain root → current.
+  const chain = [root];
+  const seenFwd = new Set([root.id]);
+  let cur = root;
+  while (cur.invalidated_by != null) {
+    const next = byId(cur.invalidated_by);
+    if (!next || seenFwd.has(next.id)) break; // guard against cycles
+    seenFwd.add(next.id);
+    chain.push(next);
+    cur = next;
+  }
+
+  console.log(`--- HISTORY: #${id} (${chain.length} link${chain.length === 1 ? '' : 's'}) ---`);
+  for (let i = 0; i < chain.length; i++) {
+    const e = chain[i];
+    const date = (e.valid_from || e.timestamp || '').slice(0, 10);
+    const status = e.valid_to == null
+      ? 'current'
+      : `superseded ${e.valid_to.slice(0, 10)} by #${e.invalidated_by}`;
+    const marker = e.id === Number(id) ? ' *' : '';
+    console.log(`  #${e.id} [${e.tier}|${e.category}] ${date} — ${e.message}  (${status})${marker}`);
+  }
+  console.log('---');
+}
+
 module.exports = function log(args) {
   const parsed = parseArgs(args);
   // A value-flag given without a value (e.g. `--corrects --cat decision`) must
   // error, not silently drop — a lost --corrects leaves the contradicted entry
   // live. Likewise --corrects/--relates must be integer entry IDs, not NULL.
   assertCompleteFlags(parsed);
-  assertIntegerFlags(parsed, ['corrects', 'relates']);
+  assertIntegerFlags(parsed, ['corrects', 'relates', 'history']);
   const { flags, positional } = parsed;
+
+  // `pebbl log --history <id>`: read-only view of a decision's supersession
+  // chain. Branches before the message-required check below.
+  if (flags.history != null) {
+    printHistory(requirePebblDir(), parseInt(flags.history, 10));
+    return;
+  }
 
   const message = positional.join(' ').trim();
   if (!message) {
@@ -156,10 +213,30 @@ module.exports = function log(args) {
   fs.appendFileSync(path.join(pebblDir, 'manual-logs.md'), md);
 
   const db = openDb(pebblDir);
-  db.prepare(`
-    INSERT INTO logs (timestamp, source, category, tier, message, topics, relates_to, corrects)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(ts, source, category, tier, message, topics, relatesTo, corrects);
+  // Bi-temporal (v0.5): a new entry is the current belief, valid from now with
+  // an open valid_to.
+  const info = db.prepare(`
+    INSERT INTO logs (timestamp, source, category, tier, message, topics, relates_to, corrects, valid_from, valid_to)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+  `).run(ts, source, category, tier, message, topics, relatesTo, corrects, ts);
+  const newId = Number(info.lastInsertRowid);
+
+  // On --corrects, stamp the TARGET's valid_to (when it stopped being true) and
+  // invalidated_by (what replaced it) instead of hiding it. The
+  // `AND valid_to IS NULL` write guard means correcting an ALREADY-superseded
+  // entry does not overwrite the original stamp — so a linear chain A<-B<-C
+  // leaves A's original valid_to intact (B already stamped it).
+  if (corrects != null) {
+    const stamp = db.prepare(
+      'UPDATE logs SET valid_to = ?, invalidated_by = ? WHERE id = ? AND valid_to IS NULL'
+    ).run(ts, newId, corrects);
+    if (stamp.changes === 0) {
+      const prior = db.prepare('SELECT invalidated_by FROM logs WHERE id = ?').get(corrects);
+      if (prior && prior.invalidated_by != null) {
+        console.error(`pebbl: entry #${corrects} was already superseded by #${prior.invalidated_by}; recording the link but not changing the timeline`);
+      }
+    }
+  }
 
   qmdUpdate(pebblDir);
 
@@ -199,6 +276,7 @@ function rebuildEventsView(pebblDir, rows) {
 module.exports.VALID_CATEGORIES = VALID_CATEGORIES;
 module.exports.VALID_TIERS = VALID_TIERS;
 module.exports.VALID_SOURCES = VALID_SOURCES;
+module.exports.printHistory = printHistory;
 
 function displayEntry(e) {
   const date = (e.timestamp || '').slice(0, 10);

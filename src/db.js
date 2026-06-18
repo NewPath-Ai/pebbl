@@ -13,7 +13,10 @@ CREATE TABLE IF NOT EXISTS logs (
   message    TEXT    NOT NULL,
   topics     TEXT,
   relates_to INTEGER,
-  corrects   INTEGER
+  corrects   INTEGER,
+  valid_from TEXT,           -- when this belief started being true (defaults to timestamp)
+  valid_to   TEXT,           -- when it stopped being true; NULL = currently believed
+  invalidated_by INTEGER     -- the entry that superseded it
 );
 CREATE TABLE IF NOT EXISTS commits (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,6 +51,7 @@ INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '0.3');
 const INDEXES = `
 CREATE INDEX IF NOT EXISTS idx_logs_category ON logs(category);
 CREATE INDEX IF NOT EXISTS idx_logs_tier ON logs(tier);
+CREATE INDEX IF NOT EXISTS idx_logs_valid_to ON logs(valid_to);
 `;
 
 function openDb(pebblDir) {
@@ -69,14 +73,24 @@ function topicFilter(topic) {
 
 module.exports.topicFilter = topicFilter;
 
-// Single source of truth for "this entry has not been superseded by a
-// correction." An entry is superseded when some OTHER entry's `corrects`
-// column points at its id. context.js already inlined this exact subquery in
-// three places (topic index, recent, full view); centralizing it keeps the
-// compaction nag and the rollup using the same definition so they cannot drift
-// (DRY). Returns a parameter-free SQL fragment; prefix with AND/WHERE as needed.
+// Single source of truth for "this entry is the current belief" — i.e. it has
+// not been superseded by a correction. As of v0.5 (bi-temporal supersession)
+// this is the stamped predicate `valid_to IS NULL`, replacing the old
+// `id NOT IN (SELECT corrects ...)` subquery that HID the corrected row and
+// lost the timeline. Centralizing it keeps every read site using one
+// definition so they cannot drift (DRY). Returns a parameter-free SQL fragment;
+// prefix with AND/WHERE as needed.
 function notCorrected() {
-  return 'id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL)';
+  return 'valid_to IS NULL';
+}
+
+// Beliefs valid AT a given date (bi-temporal point-in-time query): a row was
+// believed if it had started (valid_from <= date) and had not yet stopped
+// (valid_to is still open, or stopped strictly after the date). Returns a
+// fragment with two '?' placeholders; bind the same date twice.
+function validAsOf() {
+  return 'valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)';
 }
 
 module.exports.notCorrected = notCorrected;
+module.exports.validAsOf = validAsOf;

@@ -63,7 +63,7 @@ describe('migrate', () => {
       INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '0.2');
     `);
     migrate(db);
-    assert.strictEqual(getVersion(db), 0.4);
+    assert.strictEqual(getVersion(db), 0.5);
     const cols = db.prepare("PRAGMA table_info(logs)").all();
     const names = cols.map(c => c.name);
     assert(names.includes('category'));
@@ -81,7 +81,7 @@ describe('migrate', () => {
     const db = new Database(dbPath);
     migrate(db);
 
-    assert.strictEqual(getVersion(db), 0.4);
+    assert.strictEqual(getVersion(db), 0.5);
 
     const cols = db.prepare("PRAGMA table_info(logs)").all();
     const names = cols.map(c => c.name);
@@ -111,13 +111,13 @@ describe('migrate', () => {
     const db = new Database(dbPath);
 
     migrate(db);
-    assert.strictEqual(getVersion(db), 0.4);
+    assert.strictEqual(getVersion(db), 0.5);
 
     assert.doesNotThrow(() => {
       migrate(db);
     });
 
-    assert.strictEqual(getVersion(db), 0.4);
+    assert.strictEqual(getVersion(db), 0.5);
 
     const cols = db.prepare("PRAGMA table_info(logs)").all();
     const names = cols.map(c => c.name);

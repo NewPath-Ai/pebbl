@@ -6,6 +6,7 @@ const KNOWN_FLAGS = new Set([
   'done', 'todo', 'blocked', 'docs', 'latest', 'list', 'close',
   'open', 'list-open',
   'show', 'generate', 'include-archive', 'deep', 'n', 'refresh',
+  'as-of', 'history',
 ]);
 
 const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'open', 'list-open', 'show', 'generate', 'include-archive', 'deep', 'refresh']);
@@ -13,7 +14,7 @@ const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 
 // Flags whose value must be a positive integer (entry IDs). Used by the shared
 // guard below so a non-numeric value errors loudly instead of silently storing
 // NULL (parseInt('abc') === NaN, which SQLite coerces to NULL).
-const INTEGER_FLAGS = new Set(['relates', 'corrects', 'n']);
+const INTEGER_FLAGS = new Set(['relates', 'corrects', 'n', 'history']);
 
 function parseArgs(args) {
   const flags = {};

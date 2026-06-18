@@ -22,7 +22,10 @@ function setupDb(dir) {
       message    TEXT    NOT NULL,
       topics     TEXT,
       relates_to INTEGER,
-      corrects   INTEGER
+      corrects   INTEGER,
+      valid_from TEXT,
+      valid_to   TEXT,
+      invalidated_by INTEGER
     );
   `);
   return db;
@@ -192,7 +195,10 @@ describe('compact - execute helpers', () => {
         message    TEXT NOT NULL,
         topics     TEXT,
         relates_to INTEGER,
-        corrects   INTEGER
+        corrects   INTEGER,
+        valid_from TEXT,
+        valid_to   TEXT,
+        invalidated_by INTEGER
       );
     `);
     db.prepare('INSERT INTO logs (timestamp, source, category, tier, message, topics) VALUES (?, ?, ?, ?, ?, ?)')

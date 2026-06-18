@@ -62,6 +62,32 @@ function migrate(db) {
     setVersion(db, 0.4);
     console.error('pebbl: migrated db to v0.4 (handoffs.docs)');
   }
+  if (version < 0.5) {
+    // Bi-temporal supersession: stamp WHEN a belief stopped being true instead
+    // of hiding it. valid_to IS NULL == currently believed; invalidated_by ==
+    // the entry that superseded it. Additive, no data loss.
+    const cols = new Set(db.prepare('PRAGMA table_info(logs)').all().map(c => c.name));
+    if (!cols.has('valid_from')) {
+      db.exec(`ALTER TABLE logs ADD COLUMN valid_from TEXT;
+               ALTER TABLE logs ADD COLUMN valid_to TEXT;
+               ALTER TABLE logs ADD COLUMN invalidated_by INTEGER;`);
+    }
+    // Backfill: every existing row was valid from its own timestamp.
+    db.prepare('UPDATE logs SET valid_from = timestamp WHERE valid_from IS NULL').run();
+    // Retro-stamp anything an existing correction pointed at, so today's
+    // hide-behavior is preserved as stamped-superseded. The most recent
+    // correcting entry wins (linear chain, newest id last).
+    db.prepare(`
+      UPDATE logs SET
+        valid_to = (SELECT c.timestamp FROM logs c WHERE c.corrects = logs.id ORDER BY c.id DESC LIMIT 1),
+        invalidated_by = (SELECT c.id FROM logs c WHERE c.corrects = logs.id ORDER BY c.id DESC LIMIT 1)
+      WHERE valid_to IS NULL
+        AND id IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL)
+    `).run();
+    db.exec('CREATE INDEX IF NOT EXISTS idx_logs_valid_to ON logs(valid_to)');
+    setVersion(db, 0.5);
+    console.error('pebbl: migrated db to v0.5 (bi-temporal corrects)');
+  }
 }
 
 module.exports = { migrate, getVersion };
