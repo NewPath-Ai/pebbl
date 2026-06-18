@@ -139,7 +139,7 @@ describe('compact - buildGroups', () => {
 });
 
 describe('compact - execute helpers', () => {
-  const { buildGroups, archiveEntries, regenerateMarkdown, generateRollupMessage } = require('../src/compact');
+  const { buildGroups, regenerateMarkdown, generateRollupMessage } = require('../src/compact');
 
   let dir, db;
 
@@ -162,24 +162,19 @@ describe('compact - execute helpers', () => {
     assert(msg.includes('added refresh tokens'));
   });
 
-  it('archiveEntries creates archive file with correct format', () => {
-    dir = tmpDir();
-    fs.mkdirSync(path.join(dir, 'archive'), { recursive: true });
-
-    const entries = [
-      { id: 1, tier: 'detail', category: 'decision', topics: 'auth', message: 'chose JWT' },
-      { id: 2, tier: 'detail', category: 'decision', topics: 'auth', message: 'added refresh' },
-    ];
-    archiveEntries(dir, entries, '2026-05-23T12:00:00Z');
-
-    const archivePath = path.join(dir, 'archive', '2026-05.txt');
-    assert(fs.existsSync(archivePath));
-
-    const content = fs.readFileSync(archivePath, 'utf8');
-    assert(content.includes('=== Archived 2026-05-23T12:00:00Z ==='));
-    assert(content.includes('[id:1] [detail|decision] topics:auth'));
-    assert(content.includes('[id:2] [detail|decision] topics:auth'));
-    assert(content.includes('---'));
+  // P3 (event-sourcing): the old `archiveEntries creates archive file` test is
+  // DELETED. archiveEntries + archive/*.txt + archive.md no longer exist — the
+  // append-only events.jsonl IS the durable archive (a rolled-up source stays in
+  // the log forever; the fold hides it). The append-only / zero-deletion
+  // behavior that REPLACES it is covered end-to-end in
+  // test/compact-append-only.test.js.
+  it('compact.js no longer exports or defines archiveEntries (machinery deleted)', () => {
+    const compact = require('../src/compact');
+    assert.equal(compact.archiveEntries, undefined, 'archiveEntries must be gone from exports');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'compact.js'), 'utf8');
+    assert.doesNotMatch(src, /function archiveEntries/, 'archiveEntries function must be deleted');
+    assert.doesNotMatch(src, /db\.transaction/, 'the destructive db.transaction must be gone');
+    assert.doesNotMatch(src, /INSERT INTO logs|DELETE FROM logs|UPDATE logs/, 'no destructive SQL against logs');
   });
 
   it('regenerateMarkdown rebuilds manual-logs.md from SQLite', () => {

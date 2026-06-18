@@ -212,6 +212,16 @@ function showCompactionNotifications(db, pebblDir) {
     const topic = key.split('/')[1];
     console.log(`[pebbl] ${entries.length} entries on '${topic}' ready for compaction. Run: pebbl compact --preview`);
   }
+
+  // Compaction-on-release: a SOFT reminder only (design Q2=A). Now that
+  // compaction is append-only, it is the natural thing to run before sharing /
+  // releasing a store so the rollups are in the committed log. This is a
+  // notification, NEVER an interlock — it does not block, error, or change the
+  // exit code. The fold dedups overlapping rollups, so skipping it is "ugly,
+  // not broken." Harden later only if duplicate rollups appear in practice.
+  if (groups.size > 0) {
+    console.log('[pebbl] tip: compaction is append-only now — consider running it before you release/share this store.');
+  }
 }
 
 // ── drift detection ──────────────────────────────────────────────────────────
