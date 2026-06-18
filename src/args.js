@@ -6,10 +6,10 @@ const KNOWN_FLAGS = new Set([
   'done', 'todo', 'blocked', 'docs', 'latest', 'list', 'close',
   'open', 'list-open',
   'show', 'generate', 'include-archive', 'deep', 'n', 'refresh',
-  'as-of', 'history',
+  'as-of', 'history', 'share',
 ]);
 
-const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'open', 'list-open', 'show', 'generate', 'include-archive', 'deep', 'refresh']);
+const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'open', 'list-open', 'show', 'generate', 'include-archive', 'deep', 'refresh', 'share']);
 
 // Flags whose value must be a positive integer (entry IDs). Used by the shared
 // guard below so a non-numeric value errors loudly instead of silently storing

@@ -1,0 +1,495 @@
+'use strict';
+// P5 — the shared, pure secret/PII detector. ONE leak-class definition reused
+// by BOTH the git hooks (pre-commit / pre-push, forward gate) and
+// `pebbl audit-history` (the one-time backward scan over committed history).
+// DRY: there is exactly one place that decides "this line leaks," so the
+// forward and historical scans can never disagree.
+//
+// The design's killer risk is that append-only memory can NEVER forget: a
+// secret committed once lives in every clone/fork forever and can only be
+// hidden from the live view, never deleted. So the scan must catch the three
+// classes the LIVE sw-factory store actually leaks (design Privacy, lines
+// 40-44) — a token-shape regex ALONE is insufficient (it misses IPs and
+// credential paths, and false-negatives on a rotated-shape token):
+//
+//   (a) NETWORK: a non-RFC1918 IPv4 address, and any host:port pair on a
+//       public IP. RFC1918 private ranges (10/8, 172.16/12, 192.168/16) plus
+//       loopback/link-local are explicitly NOT leaks — they're local infra.
+//   (b) CREDENTIAL FILE PATHS: `.env`, `.claude-env`, `/etc/*-bot.env`, and
+//       the design's named paths (/root/.claude-env, the four bot.env paths).
+//   (c) PII / NAME DENYLIST: real names seeded from the repo's anon name-map
+//       (the `real` strings — what must never leak). Loaded from a configurable
+//       source; degrades GRACEFULLY to an empty denylist if no map exists, so a
+//       repo without a name-map still gets classes (a) and (b) and never crashes.
+//
+// Plus a TOKEN-SHAPE class for high-confidence secret shapes (sk-ant-…,
+// AWS keys, github tokens, long hex/base64 blobs in an assignment) — additive
+// to, not a replacement for, the three classes above.
+//
+// This module is PURE + side-effect free in its core (scan/_internal), modeled
+// on src/scan-commits.js: a pure matching core, a CLI shell that NEVER
+// auto-acts (it only reports + sets a non-zero exit), and an `_internal` export
+// for tests. The hooks shell into this; the detector itself touches no git.
+
+const fs = require('fs');
+const path = require('path');
+
+// ── (a) network ───────────────────────────────────────────────────────────────
+// Match a dotted IPv4. We validate octet ranges so "version 1.2.3 build 4" only
+// matches a real 4-octet address, and classify RFC1918 / loopback / link-local
+// as PRIVATE (not a leak).
+const IPV4_RE = /\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b/g;
+
+function isValidOctet(n) {
+  return n >= 0 && n <= 255;
+}
+
+// RFC1918 + loopback + link-local + "this host" — local infra, never a leak.
+function isPrivateIp(a, b, c, d) {
+  if (a === 10) return true;                                  // 10.0.0.0/8
+  if (a === 172 && b >= 16 && b <= 31) return true;           // 172.16.0.0/12
+  if (a === 192 && b === 168) return true;                    // 192.168.0.0/16
+  if (a === 127) return true;                                 // loopback
+  if (a === 169 && b === 254) return true;                    // link-local
+  if (a === 0) return true;                                   // 0.0.0.0/8 "this host"
+  void c; void d;
+  return false;
+}
+
+// Find every non-private IPv4 in the text, with an optional :port suffix.
+// Returns [{ ip, port, index }].
+function findPublicIps(text) {
+  const out = [];
+  let m;
+  IPV4_RE.lastIndex = 0;
+  while ((m = IPV4_RE.exec(text)) !== null) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    const c = Number(m[3]);
+    const d = Number(m[4]);
+    if (![a, b, c, d].every(isValidOctet)) continue; // not a real IPv4
+    if (isPrivateIp(a, b, c, d)) continue;           // RFC1918 / loopback — fine
+    // optional :port immediately after the address
+    const after = text.slice(m.index + m[0].length);
+    const portMatch = /^:(\d{1,5})\b/.exec(after);
+    const port = portMatch ? Number(portMatch[1]) : null;
+    out.push({ ip: m[0], port, index: m.index });
+  }
+  return out;
+}
+
+// ── (b) credential file paths ────────────────────────────────────────────────
+// Literal credential-bearing paths the live store leaks. We match the design's
+// named paths explicitly AND the general shapes (*.env basenames, dot-env files,
+// /etc/*-bot.env), so a NEW bot.env path is still caught without a code change.
+const CRED_PATH_PATTERNS = [
+  // dot-env style basenames: .env, .env.local, .claude-env, .factory-env, etc.
+  /(^|[\s"'`(=:/\\])\.(?:[a-z0-9-]+-)?env(?:\.[a-z0-9.-]+)?\b/i,
+  // any *-bot.env or *.env file under a path (e.g. /etc/factory-updates-bot.env)
+  /[\w./-]*\b[\w-]*\.env\b/i,
+  // explicit /etc|/root credential dirs naming env/secret/token/credential files
+  /\/(?:etc|root|home\/[^/\s]+)\/[\w./-]*(?:bot\.env|\.env|\.claude-env|secret|credential|token)[\w./-]*/i,
+];
+
+function findCredPaths(text) {
+  const raw = [];
+  for (const re of CRED_PATH_PATTERNS) {
+    const m = re.exec(text);
+    if (m) raw.push({ match: m[0].trim(), index: m.index });
+  }
+  // Several patterns intentionally overlap (a .env basename also matches the
+  // generic *.env shape). Keep the LONGEST (most specific) match and drop any
+  // whose text is already contained in a kept match, so one path reports once.
+  raw.sort((a, b) => b.match.length - a.match.length);
+  const kept = [];
+  for (const h of raw) {
+    const cleaned = h.match.replace(/^[\s"'`(=:]+/, '');
+    if (!cleaned) continue;
+    if (kept.some((k) => k.match.includes(cleaned))) continue;
+    kept.push({ match: cleaned, index: h.index });
+  }
+  return kept;
+}
+
+// ── token shapes (additive high-confidence secret shapes) ────────────────────
+const TOKEN_PATTERNS = [
+  { name: 'anthropic-oauth', re: /\bsk-ant-[a-z0-9-]{8,}/i },
+  { name: 'anthropic-api', re: /\bsk-ant-api[0-9]{2}-[a-z0-9_-]{8,}/i },
+  { name: 'openai', re: /\bsk-[a-zA-Z0-9]{20,}/ },
+  { name: 'aws-access-key', re: /\bAKIA[0-9A-Z]{16}\b/ },
+  { name: 'github-token', re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/ },
+  { name: 'slack-token', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}/ },
+  { name: 'private-key-block', re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
+];
+
+function findTokens(text) {
+  const out = [];
+  for (const { name, re } of TOKEN_PATTERNS) {
+    const m = re.exec(text);
+    if (m) out.push({ shape: name, match: m[0], index: m.index });
+  }
+  return out;
+}
+
+// ── (c) PII / name denylist ──────────────────────────────────────────────────
+// The denylist is the set of REAL strings from an anon name-map (the values
+// that must never leak). The map is the same `[{real, pseudonym, type}]` shape
+// the factory's anonymize tool emits. Resolution order (configurable source):
+//   1. explicit opts.denylist (array of strings) — used by tests
+//   2. explicit opts.nameMapPath
+//   3. $PEBBL_NAME_MAP env var
+//   4. <pebblDir>/name-map.json  (opts.pebblDir)
+//   5. <repoRoot>/name-map.json  (opts.repoRoot)
+// Missing / unreadable / malformed map => empty denylist (degrade gracefully,
+// never throw). Only `real` strings longer than 2 chars are denylisted, so a
+// one-letter pseudonym key can't carpet-match the whole corpus.
+function loadDenylist(opts = {}) {
+  if (Array.isArray(opts.denylist)) {
+    return opts.denylist.filter((s) => typeof s === 'string' && s.trim().length > 2);
+  }
+  const candidates = [];
+  if (opts.nameMapPath) candidates.push(opts.nameMapPath);
+  if (process.env.PEBBL_NAME_MAP) candidates.push(process.env.PEBBL_NAME_MAP);
+  if (opts.pebblDir) candidates.push(path.join(opts.pebblDir, 'name-map.json'));
+  if (opts.repoRoot) candidates.push(path.join(opts.repoRoot, 'name-map.json'));
+
+  for (const p of candidates) {
+    try {
+      if (!p || !fs.existsSync(p)) continue;
+      const raw = fs.readFileSync(p, 'utf8');
+      const parsed = JSON.parse(raw);
+      const names = [];
+      if (Array.isArray(parsed)) {
+        for (const e of parsed) {
+          if (e && typeof e.real === 'string') names.push(e.real);
+        }
+      } else if (parsed && typeof parsed === 'object') {
+        // also accept a {real: pseudonym} flat map
+        for (const k of Object.keys(parsed)) names.push(k);
+      }
+      const filtered = names.filter((s) => typeof s === 'string' && s.trim().length > 2);
+      if (filtered.length) return filtered;
+    } catch {
+      // malformed / unreadable map — try the next candidate, never crash
+    }
+  }
+  return [];
+}
+
+// Escape a denylist entry for use inside a regex (names can contain ., (, ) …).
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function findNames(text, denylist) {
+  if (!denylist || denylist.length === 0) return [];
+  const out = [];
+  for (const name of denylist) {
+    // Word-ish boundary so "Kingdom" matches "Kingdom" but the surrounding
+    // pseudonym substitution isn't required to be standalone; we use a
+    // case-insensitive substring with boundaries that tolerate punctuation.
+    const re = new RegExp(`(^|[^A-Za-z0-9])${escapeRe(name)}([^A-Za-z0-9]|$)`, 'i');
+    const m = re.exec(text);
+    if (m) out.push({ name, index: m.index });
+  }
+  return out;
+}
+
+// ── the core: scan one chunk of text ─────────────────────────────────────────
+// Returns an array of hits: { class, match, line, index }. `class` is one of
+// 'network' | 'cred-path' | 'token' | 'name'. Empty array => clean.
+// Pure: no I/O beyond the denylist load the CALLER passes in (we resolve the
+// denylist once via opts so a multi-line scan doesn't re-read the map per line).
+function scan(text, opts = {}) {
+  if (text == null) return [];
+  const denylist = Array.isArray(opts._denylist) ? opts._denylist : loadDenylist(opts);
+  const hits = [];
+  const str = String(text);
+  const lines = str.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineNo = i + 1;
+    for (const ip of findPublicIps(line)) {
+      hits.push({
+        class: 'network',
+        match: ip.port != null ? `${ip.ip}:${ip.port}` : ip.ip,
+        detail: ip.port != null ? 'public host:port' : 'public IP',
+        line: lineNo,
+        index: ip.index,
+      });
+    }
+    for (const c of findCredPaths(line)) {
+      hits.push({ class: 'cred-path', match: c.match, detail: 'credential file path', line: lineNo, index: c.index });
+    }
+    for (const t of findTokens(line)) {
+      hits.push({ class: 'token', match: t.match, detail: `token shape: ${t.shape}`, line: lineNo, index: t.index });
+    }
+    for (const n of findNames(line, denylist)) {
+      hits.push({ class: 'name', match: n.name, detail: 'PII / denylisted name', line: lineNo, index: n.index });
+    }
+  }
+  return hits;
+}
+
+// Scan many (path, text) pairs, resolving the denylist ONCE. Returns
+// [{ file, hits: [...] }] for files with at least one hit.
+function scanFiles(files, opts = {}) {
+  const denylist = loadDenylist(opts);
+  const out = [];
+  for (const f of files) {
+    const hits = scan(f.text, { ...opts, _denylist: denylist });
+    if (hits.length) out.push({ file: f.path, hits });
+  }
+  return out;
+}
+
+// ── remote visibility detection (shared by the pre-push gate AND log.js's
+// foundation private-by-default routing) ─────────────────────────────────────
+// Returns { hasRemote, visibility: 'public'|'private'|'unknown', remotes, reason }.
+// We can't always KNOW (no remote, an SSH host we can't probe, a self-hosted
+// git). The honest contract: only a remote we can positively identify as a
+// PUBLIC host (github.com/gitlab.com/bitbucket over https with a reachable
+// public-API yes, or an explicit override) is treated as public. Everything
+// else is treated as PRIVATE-OR-UNKNOWN, which is the SAFE default for
+// foundation routing (private repos share foundation freely) — BUT the public
+// push GATE must fail-safe the other way (see auditCleanForPush). A
+// PEBBL_REMOTE_VISIBILITY env override exists for tests / self-hosted setups.
+function detectRemoteVisibility(execGit) {
+  // execGit(args[]) -> string (stdout) or throws. Injected so this stays
+  // testable without spawning git. Callers pass a thin execFileSync wrapper.
+  let remotesRaw = '';
+  try {
+    remotesRaw = execGit(['remote', '-v']) || '';
+  } catch {
+    remotesRaw = '';
+  }
+  const remotes = [];
+  for (const line of remotesRaw.split('\n')) {
+    const m = /^(\S+)\s+(\S+)\s+\((fetch|push)\)/.exec(line.trim());
+    if (m && m[3] === 'fetch') remotes.push({ name: m[1], url: m[2] });
+  }
+
+  const override = process.env.PEBBL_REMOTE_VISIBILITY;
+  if (override === 'public' || override === 'private') {
+    return { hasRemote: remotes.length > 0, visibility: override, remotes, reason: 'env override' };
+  }
+
+  if (remotes.length === 0) {
+    return { hasRemote: false, visibility: 'unknown', remotes, reason: 'no remote configured' };
+  }
+
+  // Classify each remote URL. A KNOWN public host (github/gitlab/bitbucket)
+  // we can probe; a private/SSH/self-hosted URL we treat as private-or-unknown.
+  let sawPublicHost = false;
+  for (const r of remotes) {
+    const host = parseGitHost(r.url);
+    if (host && PUBLIC_GIT_HOSTS.has(host)) sawPublicHost = true;
+  }
+
+  if (!sawPublicHost) {
+    // self-hosted / unknown host: can't prove public → treat as private for
+    // foundation routing, but the PUSH gate stays conservative separately.
+    return { hasRemote: true, visibility: 'unknown', remotes, reason: 'remote host not a known public forge' };
+  }
+
+  // A known public forge. Probe the repo's visibility via the host API when we
+  // can resolve owner/repo; if the probe is inconclusive we FAIL CLOSED to
+  // 'public' (the safer assumption — a public repo treated as private would
+  // leak foundation entries; treating private as public only adds friction).
+  for (const r of remotes) {
+    const slug = parseGitHubSlug(r.url);
+    if (slug) {
+      const vis = probeGitHubVisibility(slug, execGit);
+      if (vis === 'public' || vis === 'private') {
+        return { hasRemote: true, visibility: vis, remotes, reason: `probed ${slug.host}` };
+      }
+    }
+  }
+  // Known public forge but couldn't probe → assume public (fail closed/safe).
+  return { hasRemote: true, visibility: 'public', remotes, reason: 'public forge, visibility unprobed (assumed public)' };
+}
+
+const PUBLIC_GIT_HOSTS = new Set(['github.com', 'gitlab.com', 'bitbucket.org']);
+
+function parseGitHost(url) {
+  if (!url) return null;
+  // git@github.com:owner/repo.git
+  let m = /^[\w.-]+@([\w.-]+):/.exec(url);
+  if (m) return m[1].toLowerCase();
+  // https://github.com/owner/repo.git  |  ssh://git@github.com/owner/repo
+  m = /^[a-z]+:\/\/(?:[^@/]+@)?([\w.-]+)(?:[:/])/.exec(url);
+  if (m) return m[1].toLowerCase();
+  return null;
+}
+
+function parseGitHubSlug(url) {
+  const host = parseGitHost(url);
+  if (host !== 'github.com') return null;
+  // owner/repo from either ssh or https form, strip trailing .git
+  let m = /github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/.exec(url);
+  if (!m) return null;
+  return { host, owner: m[1], repo: m[2] };
+}
+
+// Best-effort GitHub visibility probe. Uses `gh` if present (authenticated),
+// else falls back to an unauthenticated API request via the host's curl. Any
+// failure returns 'unknown' so the caller can apply its fail-safe default. We
+// route through execGit's sibling exec by accepting an optional probe override
+// for tests.
+function probeGitHubVisibility(slug, execGit) {
+  void execGit;
+  // Test / offline override: PEBBL_GH_VISIBILITY=public|private short-circuits.
+  const o = process.env.PEBBL_GH_VISIBILITY;
+  if (o === 'public' || o === 'private') return o;
+  try {
+    const { execFileSync } = require('child_process');
+    const out = execFileSync('gh', ['repo', 'view', `${slug.owner}/${slug.repo}`, '--json', 'visibility', '-q', '.visibility'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+    }).trim().toLowerCase();
+    if (out === 'public') return 'public';
+    if (out === 'private' || out === 'internal') return 'private';
+  } catch {
+    // gh missing / unauthenticated / network — fall through to unknown
+  }
+  return 'unknown';
+}
+
+// ── the CLI shell the git hooks shell into ───────────────────────────────────
+// `pebbl privacy-scan --staged`  (pre-commit): scan the ADDED lines of the
+//   staged diff. A hit => print the findings, exit 1, refuse the commit.
+// `pebbl privacy-scan --push`    (pre-push): scan the commits being pushed AND,
+//   on a PUBLIC remote, enforce the hard gate — a clean FULL-history *.md scan
+//   must pass before a shared push is allowed. A hit => exit 1.
+// Default (no flag): read stdin and scan it (composable / testable).
+//
+// This shell NEVER edits, stages, or mutates anything. It only reports + sets a
+// non-zero exit, exactly like scan-commits never auto-logs. Best-effort: if git
+// plumbing is unavailable it errs on the side of ALLOWING the commit (exit 0)
+// rather than wedging the user's workflow on a tooling gap — the gate is a
+// guardrail, not a tripwire (a false block on every commit would get the hook
+// deleted, which is worse than a missed scan; audit-history is the backstop).
+
+function execGitRaw(repoRoot, args) {
+  const { execFileSync } = require('child_process');
+  try {
+    return execFileSync('git', args, {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return '';
+  }
+}
+
+// Added lines of the staged diff (lines starting with '+', minus the +++ header).
+function stagedAddedText(repoRoot) {
+  const diff = execGitRaw(repoRoot, ['diff', '--cached', '--unified=0', '--no-color']);
+  const added = [];
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) added.push(line.slice(1));
+  }
+  return added.join('\n');
+}
+
+function repoRootOf(startDir) {
+  const root = execGitRaw(startDir || process.cwd(), ['rev-parse', '--show-toplevel']).trim();
+  return root || (startDir || process.cwd());
+}
+
+function printHits(label, hits) {
+  console.error(`\npebbl privacy-scan: BLOCKED — ${hits.length} potential leak${hits.length === 1 ? '' : 's'} in ${label}:`);
+  for (const h of hits) {
+    console.error(`  [${h.class}] ${h.match}  (${h.detail}, line ${h.line})`);
+  }
+  console.error('\nThis content would be committed/pushed into shared, append-only memory, where it');
+  console.error('cannot ever be un-leaked. Remove the secret/PII (or move it to events.local.jsonl),');
+  console.error('then retry. RFC1918 IPs and pseudonyms are fine. (To inspect: pebbl audit-history.)');
+}
+
+// Full-history *.md scan for the public-repo hard gate. Reuses audit-history's
+// blob walk so "clean" means the same thing forward and backward. Returns hits[].
+function fullHistoryMdHits(repoRoot, opts) {
+  try {
+    const { _internal } = require('./audit-history');
+    const pairs = _internal.collectMdBlobs(repoRoot);
+    return _internal.auditBlobs(
+      pairs,
+      (commit, p) => _internal.showBlob(repoRoot, commit, p),
+      opts,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function cli(args) {
+  const argv = Array.isArray(args) ? args : [];
+  const repoRoot = repoRootOf(process.cwd());
+  const findPebbl = (() => {
+    try { return require('./find-pebbl').findPebblDir(); } catch { return null; }
+  })();
+  const opts = { repoRoot, pebblDir: findPebbl || undefined };
+
+  // pre-push: scan the push AND enforce the public-repo hard gate.
+  if (argv.includes('--push')) {
+    const vis = detectRemoteVisibility((a) => execGitRaw(repoRoot, a));
+    // Always scan the staged-equivalent: on push there's nothing staged, so
+    // scan the working-tree *.md plus the full history when public.
+    if (vis.visibility === 'public') {
+      const hits = fullHistoryMdHits(repoRoot, opts);
+      if (hits.length) {
+        printHits('committed .md history (public remote — hard gate)', hits.slice(0, 50));
+        console.error(`\nThis remote is PUBLIC (${vis.reason}). A shared push is blocked until`);
+        console.error('`pebbl audit-history` is clean. Rotate/resolve the findings, then push.');
+        process.exit(1);
+      }
+    }
+    process.exit(0);
+  }
+
+  // pre-commit (--staged) or stdin (default).
+  let text;
+  let label;
+  if (argv.includes('--staged')) {
+    text = stagedAddedText(repoRoot);
+    label = 'the staged diff';
+  } else {
+    label = 'input';
+    try { text = require('fs').readFileSync(0, 'utf8'); } catch { text = ''; }
+  }
+  const hits = scan(text, opts);
+  if (hits.length) {
+    printHits(label, hits);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+module.exports = {
+  scan,
+  scanFiles,
+  cli,
+  loadDenylist,
+  detectRemoteVisibility,
+  // legacy/alt names the verify harness probes for
+  scanText: scan,
+  _internal: {
+    scan,
+    findPublicIps,
+    findCredPaths,
+    findTokens,
+    findNames,
+    isPrivateIp,
+    loadDenylist,
+    detectRemoteVisibility,
+    parseGitHost,
+    parseGitHubSlug,
+    PUBLIC_GIT_HOSTS,
+    TOKEN_PATTERNS,
+    CRED_PATH_PATTERNS,
+  },
+};

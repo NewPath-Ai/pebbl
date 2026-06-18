@@ -21,6 +21,8 @@ const commands = {
   feedback:     () => require('../src/feedback')(args),
   check:        () => require('../src/check')(args),
   'scan-commits': () => require('../src/scan-commits')(args),
+  'audit-history': () => require('../src/audit-history')(args),
+  'privacy-scan': () => require('../src/privacy-scan').cli(args),
   'log-commit': () => require('../src/log-commit')(args[0], args[1], args[2]),
   'migrate-to-events': () => require('../src/migrate-to-events')(args),
 };
