@@ -68,3 +68,15 @@ function topicFilter(topic) {
 }
 
 module.exports.topicFilter = topicFilter;
+
+// Single source of truth for "this entry has not been superseded by a
+// correction." An entry is superseded when some OTHER entry's `corrects`
+// column points at its id. context.js already inlined this exact subquery in
+// three places (topic index, recent, full view); centralizing it keeps the
+// compaction nag and the rollup using the same definition so they cannot drift
+// (DRY). Returns a parameter-free SQL fragment; prefix with AND/WHERE as needed.
+function notCorrected() {
+  return 'id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL)';
+}
+
+module.exports.notCorrected = notCorrected;
