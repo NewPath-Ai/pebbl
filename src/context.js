@@ -486,4 +486,8 @@ module.exports = function context(args) {
   } else {
     contextDefault(pebblDir, db);
   }
+
+  // Search-first nudge: context shows the curated index, but superseded or
+  // corrected decisions that grep can't surface live in the search corpus.
+  console.log("before deciding in an area you don't see above, run pebbl search '<area>' — catches superseded choices grep can't");
 };
