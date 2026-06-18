@@ -245,7 +245,7 @@ function contextDefault(pebblDir, db) {
       // Auto-update refs if corrections were made
       updateRefs(pebblDir, db);
       console.log(`[pebbl] Narrative may be outdated: ${driftResult.reasons.join('; ')}`);
-      console.log('  Run: pebbl narrative --refresh');
+      console.log('  Update the text: pebbl narrative "<updated text>"');
     }
 
     console.log('');
