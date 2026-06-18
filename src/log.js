@@ -284,10 +284,15 @@ module.exports = function log(args) {
   console.log(mdEntry.out);
 };
 
-// Rebuild the folded view projection from `append` events. Separate file
-// from manual-logs.md so the existing (canonical) projection is untouched;
-// this is the read end of the tracer's append -> fold -> read loop. Row
-// shape mirrors regenerateMarkdown (compact.js:114-130) for familiarity.
+// Rebuild the folded view projection from the event log. P1 fills in the
+// rebuild seam P0 cut: write the real, disposable `view.sqlite` (the FK-
+// translated read model) from the full fold, alongside the human-readable
+// events-view.md tracer. This stays ADDITIVE — the canonical db.sqlite +
+// manual-logs.md the existing read path uses are NOT touched here (P6 cutover
+// flips openDb to view.sqlite; P1 only proves the artifact rebuilds, and the
+// byte-identity vs db.sqlite is proven by the fold-equivalence test, not by
+// clobbering the canonical files). Row shape mirrors regenerateMarkdown
+// (compact.js:143-159) for the tracer comment block.
 function rebuildEventsView(pebblDir, rows) {
   let md = '# Events View (folded)\n\n';
   for (const row of rows) {
@@ -295,6 +300,19 @@ function rebuildEventsView(pebblDir, rows) {
     md += `<!-- eid:${row.eid} cat:${row.category} topic:${row.topics} tier:${row.tier} actor:${row.actor} -->\n\n`;
   }
   fs.writeFileSync(path.join(pebblDir, 'events-view.md'), md);
+
+  // Build the disposable view.sqlite from the full fold (the real read model
+  // downstream phases consume). Best-effort: never let the additive view break
+  // the canonical write — the same contract the appendLogEvent try/catch keeps.
+  try {
+    const { foldFull } = require('./events');
+    const { writeViewSqlite } = require('./view');
+    const { readEvents } = require('./events');
+    const projection = foldFull(readEvents(pebblDir));
+    writeViewSqlite(projection, path.join(pebblDir, 'view.sqlite'));
+  } catch (err) {
+    console.error(`pebbl: view.sqlite rebuild skipped (${err.message})`);
+  }
 }
 
 module.exports.VALID_CATEGORIES = VALID_CATEGORIES;
