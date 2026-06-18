@@ -169,6 +169,29 @@ pebbl compact --execute
 
 Foundation entries (project-wide decisions) never compact — they're permanent. Component entries compact when 15+ share the same topic.
 
+### 7. Report a problem with pebbl itself
+
+When pebbl misbehaves, drop a `feedback` pebble. It writes straight to
+`.pebbl/feedback.jsonl`, bypassing the SQLite db and qmd on purpose — feedback
+has to survive even when those layers are the thing that's broken.
+
+```bash
+# Capture what went wrong (echoes a short id):
+pebbl feedback "narrative --refresh wiped the body"
+
+# Review everything still open:
+pebbl feedback --list
+
+# Mark one fixed so it stops showing up:
+pebbl feedback --resolve <id>
+```
+
+Unresolved feedback surfaces at the top of `pebbl context`, so the next agent
+sees it. Resolving appends a `{resolves:<id>}` marker (the file is append-only,
+never rewritten) and the item drops off the surface — so the list stays the
+live backlog, not forever-noise. Run `pebbl feedback` outside any project and it
+saves to a global `~/.pebbl/feedback.jsonl` instead of minting a stray `.pebbl/`.
+
 ## Getting started: for humans
 
 Install globally:
@@ -201,6 +224,11 @@ Handoff flags:
 - `--latest` — show the most recent handoff
 - `--list` — list recent handoffs
 - `--close` — close an open handoff; session detail entries become compaction-eligible; done/todo/blocked stay searchable in handoffs.md
+
+Feedback flags (`pebbl feedback`):
+- (no flag) `pebbl feedback "what went wrong"` — record a problem with pebbl itself
+- `--list` — show open (unresolved) feedback
+- `--resolve <id>` — mark a feedback item fixed so it drops off `context`
 
 ## Getting started: for agents
 

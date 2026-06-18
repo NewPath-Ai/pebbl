@@ -35,6 +35,24 @@ pebbl --help                         # subcommand reference
 
 No build step, no linter configured. Don't add either without asking.
 
+### Reporting bugs in pebbl itself
+
+When pebbl misbehaves while you're working on it, capture it instead of letting
+it evaporate:
+
+```bash
+pebbl feedback "what went wrong"   # appends to .pebbl/feedback.jsonl, echoes an id
+pebbl feedback --list              # open (unresolved) items
+pebbl feedback --resolve <id>      # mark fixed once you land the fix
+```
+
+Feedback bypasses SQLite and qmd by design (it must survive when those are the
+broken layer). Unresolved items surface at the top of `pebbl context`; resolving
+appends a `{resolves:<id>}` marker (append-only, never rewrites the file) so the
+item drops off — the surface stays the live backlog, never forever-noise. Run it
+outside a project and it falls back to `~/.pebbl/feedback.jsonl` rather than
+minting a stray `.pebbl/`.
+
 ## Architecture
 
 ```
@@ -63,7 +81,13 @@ Subcommand files in `src/` are the unit of change. Adding a verb means a new
 
 ## Dogfooding
 
-This repo uses its own CLI for memory. Before changing behavior:
+This repo uses its own CLI for memory, and — unlike a consuming project — it
+**commits its own `.pebbl/` store**. `.gitignore` ignores `.pebbl/` for everyone
+else but re-includes this repo's root store with `!/.pebbl/`, so a fresh clone
+(or the factory building pebbl) gets the decision history, not an empty store.
+The committed store holds the migrated `notes/*.md` design decisions; `pebbl init`
+won't clobber the negation (it only appends `.pebbl/` when missing). Before
+changing behavior:
 
 ```bash
 node bin/pebbl.js context
@@ -72,6 +96,12 @@ node bin/pebbl.js search "<area you're touching>"
 
 Log decisions and failed approaches as you go. See [PEBBL.md](PEBBL.md)
 for `--cat` / `--topic` / `--tier` semantics — don't reinvent them here.
+
+`test/dogfood-roundtrip.test.js` is the CI smoke test for the dogfood loop: it
+round-trips log -> context -> compact --preview -> execute -> narrative on a
+populated store and asserts `context` reports the open-handoff count and surfaces
+unresolved feedback. If you change `context`, `compact`, `narrative`, or
+`feedback`, that test is the guard.
 
 ## Traces
 

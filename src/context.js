@@ -10,6 +10,7 @@ const { displayEntry } = require('./log');
 const { isThinEntry } = require('./detect-thin');
 const { readNarrative, readRefs, readUpdatedTimestamp, updateRefs } = require('./narrative');
 const { mirrorMachines, mirrorLogs, mirrorHandoffs, stripHandoffPrefix } = require('./mirror');
+const { showRecentFeedback } = require('./feedback');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -251,6 +252,11 @@ function contextDefault(pebblDir, db) {
   const cwd = process.cwd();
 
   showOpenHandoff(db, pebblDir);
+
+  // Unresolved feedback is a "you must act on this" surface like the open
+  // handoff — show it up top, before the narrative. Reads feedback.jsonl
+  // directly (feedback bypasses SQLite by design); resolved items drop off.
+  showRecentFeedback(pebblDir);
 
   // ── Section 1: NARRATIVE ──
 

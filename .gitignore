@@ -2,3 +2,10 @@ node_modules/
 *.log
 .pebbl/
 .DS_Store
+
+# Dogfood: this repo commits its OWN .pebbl/ store (decision history) so a fresh
+# clone carries the reasoning. The .pebbl/ ignore above stays for consuming
+# projects; this negation re-includes only THIS repo's root store. Survives
+# `pebbl init` re-runs — init.js only appends `.pebbl/` when it's missing, and
+# this line keeps the negation after it.
+!/.pebbl/
