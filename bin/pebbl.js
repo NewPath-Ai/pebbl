@@ -21,6 +21,7 @@ const commands = {
   check:        () => require('../src/check')(args),
   'scan-commits': () => require('../src/scan-commits')(args),
   'log-commit': () => require('../src/log-commit')(args[0], args[1], args[2]),
+  'migrate-to-events': () => require('../src/migrate-to-events')(args),
 };
 
 if (!command || command === '--help' || command === '-h') {
