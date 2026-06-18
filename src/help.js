@@ -199,6 +199,24 @@ Leaves .pebbl/ in place (delete it yourself if you want a clean slate).
   'log-commit': `pebbl log-commit — called by git post-commit hook
 Not meant for direct invocation.
 `,
+
+  'migrate-to-events': `pebbl migrate-to-events — lift db.sqlite into events.jsonl
+
+Reads the binary store once in (timestamp, id) order, mints time-seeded
+ULIDs, builds the oldInt->ULID map BEFORE remapping any reference, and
+remaps every foreign-key site (logs.relates_to, logs.corrects,
+handoffs.promoted_log_id, and per-element session_entries / session_commits)
+into append-only events — aborting the whole store if any reference dangles.
+
+DRY-RUN by default: prints the audit + plan and writes nothing. Idempotent:
+a second run on an already-migrated store is a safe no-op.
+
+Flags:
+  --apply        actually migrate: write events.jsonl and rename
+  --write        db.sqlite -> legacy-db.sqlite (rollback artifact)
+
+Without a flag, nothing on disk changes. db.sqlite is NEVER deleted.
+`,
 };
 
 const TOPLEVEL = `pebbl — local project memory
