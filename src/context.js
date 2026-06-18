@@ -4,6 +4,7 @@ const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb, topicFilter } = require('./db');
+const { buildGroups } = require('./compact');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { displayEntry } = require('./log');
 const { isThinEntry } = require('./detect-thin');
@@ -158,31 +159,23 @@ function showMirrors(pebblDir) {
   }
 }
 
+// The nag must report ONLY what `pebbl compact --preview` would actually roll
+// up — one source of truth. The old query counted a flat per-topic population
+// (no category, no quarter bucket, no component_threshold, no corrected-entry
+// exclusion), so it promised compaction the executor could never deliver and
+// fired forever. Now it calls the same buildGroups() the executor uses: every
+// reported group has already passed its effective threshold (component groups
+// need component_threshold, default 15), so the count is honest.
 function showCompactionNotifications(db, pebblDir) {
   const config = loadConfig(pebblDir) || {};
   const threshold = (config.compaction && config.compaction.threshold) || 10;
+  const componentThreshold = (config.compaction && config.compaction.component_threshold) || 15;
 
-  const compactable = db.prepare(`
-    SELECT topics, COUNT(*) as cnt FROM logs
-    WHERE tier IN ('component','detail','fleeting')
-      AND topics IS NOT NULL AND topics != ''
-    GROUP BY topics HAVING cnt >= ?
-  `).all(threshold);
+  const { groups } = buildGroups(db, threshold, componentThreshold);
 
-  for (const row of compactable) {
-    const topicList = (row.topics || '').split(',').map(t => t.trim());
-    for (const t of topicList) {
-      if (!t) continue;
-      const filter = topicFilter(t);
-      const topicCount = db.prepare(`
-        SELECT COUNT(*) as cnt FROM logs
-        WHERE tier IN ('component','detail','fleeting')
-          ${filter.clause}
-      `).get(...filter.params);
-      if (topicCount && topicCount.cnt >= threshold) {
-        console.log(`[pebbl] ${topicCount.cnt} entries on '${t}' ready for compaction. Run: pebbl compact --preview`);
-      }
-    }
+  for (const [key, entries] of groups) {
+    const topic = key.split('/')[1];
+    console.log(`[pebbl] ${entries.length} entries on '${topic}' ready for compaction. Run: pebbl compact --preview`);
   }
 }
 

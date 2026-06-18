@@ -3,14 +3,34 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openDb } = require('./db');
+const { openDb, notCorrected } = require('./db');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { qmdUpdate } = require('./qmd');
 
+// Quarter label for a timestamp, e.g. "2026-04-15..." → "2026-Q2". Used as the
+// compactor bucket's time dimension (see key construction below).
+function quarterOf(timestamp) {
+  const ts = timestamp || '';
+  const year = ts.slice(0, 4);
+  const month = parseInt(ts.slice(5, 7), 10);
+  const q = month >= 1 && month <= 12 ? Math.ceil(month / 3) : 1;
+  return `${year}-Q${q}`;
+}
+
 function buildGroups(db, threshold, componentThreshold) {
+  // notCorrected(): never count or roll up a superseded entry (one another
+  // entry corrects). Same exclusion the nag and context views use — DRY.
+  //
+  // corrects IS NULL: also leave the CORRECTING entry out of rollups. A rollup
+  // INSERT writes corrects=NULL (one row can't carry many edges), so folding a
+  // correcting entry would drop its corrects edge and resurface the entry it
+  // superseded. Keeping correcting entries live preserves the edge — the
+  // guardrail "rollups must NOT drop corrects edges."
   const rows = db.prepare(`
     SELECT * FROM logs
     WHERE tier IN ('component', 'detail', 'fleeting')
+      AND corrects IS NULL
+      AND ${notCorrected()}
     ORDER BY timestamp
   `).all();
 
@@ -40,8 +60,15 @@ function buildGroups(db, threshold, componentThreshold) {
     }
 
     const primaryTopic = (row.topics || 'general').split(',')[0].trim();
-    const month = (row.timestamp || '').slice(0, 7);
-    const key = `${row.category}/${primaryTopic}/${month}`;
+    // Bucket by QUARTER, not month. A long-lived topic that earns a few entries
+    // a month never crossed a per-MONTH threshold, so it was permanently
+    // uncompactable — the nag promised compaction the executor could never
+    // deliver. A quarter widens the window ~3x while keeping a meaningful time
+    // label on each rollup (we still archive every source entry, so no history
+    // is lost). Chose quarter over "drop month + cap size" because the temporal
+    // label is useful in `[rollup] ... (2026-Q2)` and the existing archive-first
+    // path already caps blast radius per group.
+    const key = `${row.category}/${primaryTopic}/${quarterOf(row.timestamp)}`;
 
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
@@ -77,9 +104,11 @@ function unionTopics(entries) {
 function generateRollupMessage(entries) {
   const category = entries[0].category;
   const topic = (entries[0].topics || 'general').split(',')[0].trim();
-  const month = (entries[0].timestamp || '').slice(0, 7);
+  // Label by quarter to match the compactor bucket key (entries in one group
+  // share a quarter, not necessarily a month).
+  const quarter = quarterOf(entries[0].timestamp);
   const messages = entries.map(e => e.message.replace(/^\[rollup\]\s*/i, ''));
-  return `[rollup] ${category} notes on ${topic} (${month}): ${messages.join('; ')}.`;
+  return `[rollup] ${category} notes on ${topic} (${quarter}): ${messages.join('; ')}.`;
 }
 
 function archiveEntries(pebblDir, entries, archiveTs) {
@@ -155,7 +184,12 @@ function parseResolve(raw) {
 }
 
 module.exports = function compact(args) {
-  const { flags } = parseArgs(args);
+  // --auto is a compact-only flag not in args.js's KNOWN_FLAGS (args.js is out
+  // of the may-touch list). Detect it from raw args (same pattern context.js
+  // uses for raw --full), then strip it before parseArgs so parseArgs doesn't
+  // emit a spurious "unknown flag" warning for a flag we do support here.
+  const isAuto = args.includes('--auto');
+  const { flags } = parseArgs(args.filter(a => a !== '--auto'));
   const pebblDir = requirePebblDir();
   ensureProjectFiles(pebblDir);
   const db = openDb(pebblDir);
@@ -167,11 +201,19 @@ module.exports = function compact(args) {
     return previewMode(db, threshold, componentThreshold);
   }
 
+  // --auto: run the safe rollup unattended. resolveRaw=undefined means no
+  // ambiguous (uncategorized) entries are resolved, so they are skipped — never
+  // guessed. Archive-first + the SQLite transaction in executeMode are
+  // unchanged, so --auto is exactly --execute minus interactive resolution.
+  if (isAuto) {
+    return executeMode(db, pebblDir, config, undefined);
+  }
+
   if (flags.execute) {
     return executeMode(db, pebblDir, config, flags.resolve);
   }
 
-  console.error('Usage: pebbl compact --preview | pebbl compact --execute [--resolve id:action,...]');
+  console.error('Usage: pebbl compact --preview | pebbl compact --execute [--resolve id:action,...] | pebbl compact --auto');
   process.exit(1);
 };
 
@@ -190,12 +232,12 @@ function previewMode(db, threshold, componentThreshold) {
   }
 
   for (const [key, entries] of groups) {
-    const [, topic, month] = key.split('/');
+    const [, topic, quarter] = key.split('/');
     const componentCount = entries.filter(e => e.tier === 'component').length;
     const isComponentGroup = componentCount > entries.length / 2;
     const label = isComponentGroup
-      ? `[component / ${topic} / ${month} — ${entries.length} entries] (consolidation)`
-      : `[detail / ${topic} / ${month} — ${entries.length} entries]`;
+      ? `[component / ${topic} / ${quarter} — ${entries.length} entries] (consolidation)`
+      : `[detail / ${topic} / ${quarter} — ${entries.length} entries]`;
     console.log(label);
     for (const e of entries) {
       console.log(`  [id:${e.id}] ${e.message}`);
