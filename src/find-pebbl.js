@@ -25,4 +25,10 @@ function requirePebblDir() {
   return dir;
 }
 
-module.exports = { findPebblDir, requirePebblDir };
+// P6 coexistence fork lives in its own module (src/store-mode.js) so the pure
+// path-picker stays separate from the walk-up discovery here. Re-exported so
+// `require('./find-pebbl').storeMode` resolves (the design's "path picked by
+// presence of events.jsonl" sits naturally next to findPebblDir).
+const { storeMode } = require('./store-mode');
+
+module.exports = { findPebblDir, requirePebblDir, storeMode };
