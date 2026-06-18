@@ -125,4 +125,126 @@ describe('parseArgs', () => {
     const result3 = parseArgs(['--close', '--topic', 'auth']);
     assert.deepStrictEqual(result3.flags, { close: true, topic: 'auth' });
   });
+
+  // ── value-flag silent-drop fix ──────────────────────────────────────────
+  it('records a value-flag followed by another --flag in missingValueFlags', () => {
+    // Previously --corrects was silently dropped here, losing the correction
+    // link and leaving the contradicted entry live.
+    const result = parseArgs(['m', '--corrects', '--cat', 'decision']);
+    assert.deepStrictEqual(result.flags, { cat: 'decision' });
+    assert.ok((result.missingValueFlags || []).includes('corrects'),
+      'expected corrects in missingValueFlags');
+  });
+
+  it('records a trailing value-flag with no following token in missingValueFlags', () => {
+    const result = parseArgs(['m', '--corrects']);
+    assert.deepStrictEqual(result.flags, {});
+    assert.ok((result.missingValueFlags || []).includes('corrects'));
+  });
+
+  it('does not record a value-flag that has a value', () => {
+    const result = parseArgs(['--corrects', '3']);
+    assert.deepStrictEqual(result.flags, { corrects: '3' });
+    assert.deepStrictEqual(result.missingValueFlags, []);
+  });
+
+  // ── --flag=value syntax ─────────────────────────────────────────────────
+  it('parses --flag=value into flags, not content', () => {
+    const result = parseArgs(['--cat=decision', 'm']);
+    assert.strictEqual(result.flags.cat, 'decision');
+    assert.deepStrictEqual(result.positional, ['m']);
+  });
+
+  it('splits on the FIRST = so values may contain =', () => {
+    const result = parseArgs(['--resolve=22:signal=keep']);
+    assert.strictEqual(result.flags.resolve, '22:signal=keep');
+  });
+
+  it('treats --flag= (empty inline value) as a missing value', () => {
+    const result = parseArgs(['--cat=']);
+    assert.strictEqual(result.flags.cat, undefined);
+    assert.ok((result.missingValueFlags || []).includes('cat'));
+  });
+
+  it('parses boolean flag with inline value: --preview=false turns it off', () => {
+    assert.strictEqual(parseArgs(['--preview=false']).flags.preview, false);
+    assert.strictEqual(parseArgs(['--preview=0']).flags.preview, false);
+    assert.strictEqual(parseArgs(['--preview=true']).flags.preview, true);
+    assert.strictEqual(parseArgs(['--preview']).flags.preview, true);
+  });
+
+  // ── guardrail: --full demotion + unknown pass-through preserved ──────────
+  it('still demotes unknown --full to positional (context.js reads it raw)', () => {
+    const result = parseArgs(['--full']);
+    assert.deepStrictEqual(result.flags, {});
+    assert.deepStrictEqual(result.positional, ['--full']);
+    assert.deepStrictEqual(result.missingValueFlags, []);
+  });
+
+  // ── shared guards ───────────────────────────────────────────────────────
+  it('assertCompleteFlags exits 1 when a value-flag is missing its value', () => {
+    const { assertCompleteFlags } = require('../src/args');
+    const errs = [];
+    const exits = [];
+    const origErr = console.error;
+    const origExit = process.exit;
+    console.error = (m) => errs.push(m);
+    process.exit = (c) => { exits.push(c); throw new Error('__exit__'); };
+    try {
+      assertCompleteFlags(parseArgs(['m', '--corrects', '--cat', 'decision']));
+    } catch (e) {
+      if (e.message !== '__exit__') throw e;
+    } finally {
+      console.error = origErr;
+      process.exit = origExit;
+    }
+    assert.deepStrictEqual(exits, [1]);
+    assert.ok(errs.some(m => /--corrects expects a value/.test(m)));
+  });
+
+  it('assertCompleteFlags is a no-op when nothing is missing', () => {
+    const { assertCompleteFlags } = require('../src/args');
+    let exited = false;
+    const origExit = process.exit;
+    process.exit = () => { exited = true; };
+    try {
+      assertCompleteFlags(parseArgs(['--corrects', '3']));
+    } finally {
+      process.exit = origExit;
+    }
+    assert.strictEqual(exited, false);
+  });
+
+  it('assertIntegerFlags exits 1 on a non-integer --corrects', () => {
+    const { assertIntegerFlags } = require('../src/args');
+    const errs = [];
+    const exits = [];
+    const origErr = console.error;
+    const origExit = process.exit;
+    console.error = (m) => errs.push(m);
+    process.exit = (c) => { exits.push(c); throw new Error('__exit__'); };
+    try {
+      assertIntegerFlags(parseArgs(['m', '--corrects', 'abc']), ['corrects', 'relates']);
+    } catch (e) {
+      if (e.message !== '__exit__') throw e;
+    } finally {
+      console.error = origErr;
+      process.exit = origExit;
+    }
+    assert.deepStrictEqual(exits, [1]);
+    assert.ok(errs.some(m => /--corrects expects an integer/.test(m)));
+  });
+
+  it('assertIntegerFlags allows valid integers and negatives', () => {
+    const { assertIntegerFlags } = require('../src/args');
+    let exited = false;
+    const origExit = process.exit;
+    process.exit = () => { exited = true; };
+    try {
+      assertIntegerFlags(parseArgs(['--corrects', '12', '--relates', '3']), ['corrects', 'relates']);
+    } finally {
+      process.exit = origExit;
+    }
+    assert.strictEqual(exited, false);
+  });
 });
