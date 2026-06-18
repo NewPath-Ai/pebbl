@@ -38,13 +38,14 @@ describe('compact - buildGroups', () => {
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('groups entries by category/primaryTopic/month above threshold', () => {
+  it('groups entries by category/primaryTopic/quarter above threshold', () => {
     dir = tmpDir();
     db = setupDb(dir);
 
     const insert = db.prepare(
       'INSERT INTO logs (timestamp, source, category, tier, message, topics) VALUES (?, ?, ?, ?, ?, ?)'
     );
+    // May = month 5 → Q2.
     for (let i = 0; i < 5; i++) {
       insert.run('2026-05-0' + (i + 1), 'human', 'decision', 'detail', `decision ${i}`, 'auth,security');
     }
@@ -54,14 +55,14 @@ describe('compact - buildGroups', () => {
 
     const { groups } = buildGroups(db, 4);
 
-    assert(groups.has('decision/auth/2026-05'));
-    assert.strictEqual(groups.get('decision/auth/2026-05').length, 5);
-    assert(!groups.has('structure/api/2026-05'));
+    assert(groups.has('decision/auth/2026-Q2'));
+    assert.strictEqual(groups.get('decision/auth/2026-Q2').length, 5);
+    assert(!groups.has('structure/api/2026-Q2'));
   });
 
   it('filters groups below threshold', () => {
     const { groups } = buildGroups(db, 6);
-    assert(!groups.has('decision/auth/2026-05'));
+    assert(!groups.has('decision/auth/2026-Q2'));
   });
 
   it('puts uncategorized entries in ambiguous list', () => {
@@ -87,7 +88,7 @@ describe('compact - buildGroups', () => {
     assert(found);
     assert.strictEqual(found.tier, 'fleeting');
     // Fleet entries should not be in groups
-    const group = groups.get('decision/auth/2026-05');
+    const group = groups.get('decision/auth/2026-Q2');
     if (group) {
       const inGroup = group.find(e => e.tier === 'fleeting');
       assert(!inGroup);
@@ -106,28 +107,31 @@ describe('compact - buildGroups', () => {
     }
 
     const { groups } = buildGroups(db, 10);
-    assert(groups.has('pattern/general/2026-05'));
+    assert(groups.has('pattern/general/2026-Q2'));
   });
 
-  it('groups across different months separately', () => {
+  it('groups across different quarters separately', () => {
     dir = tmpDir();
     db = setupDb(dir);
 
     const insert = db.prepare(
       'INSERT INTO logs (timestamp, source, category, tier, message, topics) VALUES (?, ?, ?, ?, ?, ?)'
     );
+    // May = month 5 → Q2; August = month 8 → Q3. Same category/topic but
+    // different quarters must land in separate buckets (months within a quarter
+    // would now collapse together, so we straddle the Q2/Q3 boundary).
     for (let i = 0; i < 5; i++) {
       insert.run('2026-05-0' + (i + 1), 'human', 'data', 'detail', `may ${i}`, 'storage');
     }
     for (let i = 0; i < 5; i++) {
-      insert.run('2026-06-0' + (i + 1), 'human', 'data', 'detail', `june ${i}`, 'storage');
+      insert.run('2026-08-0' + (i + 1), 'human', 'data', 'detail', `august ${i}`, 'storage');
     }
 
     const { groups } = buildGroups(db, 5);
-    assert(groups.has('data/storage/2026-05'));
-    assert(groups.has('data/storage/2026-06'));
-    assert.strictEqual(groups.get('data/storage/2026-05').length, 5);
-    assert.strictEqual(groups.get('data/storage/2026-06').length, 5);
+    assert(groups.has('data/storage/2026-Q2'));
+    assert(groups.has('data/storage/2026-Q3'));
+    assert.strictEqual(groups.get('data/storage/2026-Q2').length, 5);
+    assert.strictEqual(groups.get('data/storage/2026-Q3').length, 5);
   });
 });
 
@@ -149,7 +153,8 @@ describe('compact - execute helpers', () => {
     const msg = generateRollupMessage(entries);
     assert(msg.includes('[rollup]'));
     assert(msg.includes('decision notes on auth'));
-    assert(msg.includes('2026-05'));
+    // May timestamps → Q2; rollup labels by quarter.
+    assert(msg.includes('2026-Q2'));
     assert(msg.includes('chose JWT'));
     assert(msg.includes('added refresh tokens'));
   });
