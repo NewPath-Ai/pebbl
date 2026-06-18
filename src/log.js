@@ -4,7 +4,7 @@ const path = require('path');
 const { parseArgs, assertCompleteFlags, assertIntegerFlags } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
-const { qmdUpdate } = require('./qmd');
+const { qmdUpdateDeferred } = require('./qmd');
 const { loadRubric, classifyEntry, ensureProjectFiles } = require('./rubric');
 const { isThinEntry } = require('./detect-thin');
 const { appendLogEvent } = require('./events');
@@ -262,7 +262,13 @@ module.exports = function log(args) {
     ).run(ts, newId, corrects);
   }
 
-  qmdUpdate(pebblDir);
+  // P4: qmd is OFF the synchronous write path. The 7-9s qmd reindex (~80s with
+  // embeddings) used to run inline here and block every `pebbl log`; in some
+  // environments the qmd subprocess blocks effectively forever. We now kick it
+  // as a DETACHED background job (src/qmd.js qmdUpdateDeferred) that outlives
+  // this process, so the foreground returns after only the ms-scale SQLite fold
+  // + markdown write above. BM25 search tolerates the few-seconds-stale index.
+  qmdUpdateDeferred(pebblDir);
 
   // ADDITIVE event-sourcing path (P0 tracer). On TOP of the SQLite write +
   // markdown projection above (which stay canonical for now), also append
@@ -310,6 +316,13 @@ function rebuildEventsView(pebblDir, rows) {
     const { readEvents } = require('./events');
     const projection = foldFull(readEvents(pebblDir));
     writeViewSqlite(projection, path.join(pebblDir, 'view.sqlite'));
+    // P4: stamp the staleness watermark so the NEXT read sees the view as fresh
+    // (a fingerprint compare, no re-fold) instead of replaying the whole log.
+    // This runs inside the appendLogEvent lock; writeWatermark/currentState are
+    // plain I/O (they don't re-take the lock), so no re-entrancy here.
+    const { currentState, writeWatermark } = require('./staleness');
+    const state = currentState(pebblDir);
+    if (state) writeWatermark(pebblDir, state);
   } catch (err) {
     console.error(`pebbl: view.sqlite rebuild skipped (${err.message})`);
   }

@@ -153,6 +153,10 @@ CREATE TABLE IF NOT EXISTS handoffs (
   promoted_log_id  INTEGER,
   docs             TEXT
 );
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 function writeViewSqlite(projection, viewPath) {

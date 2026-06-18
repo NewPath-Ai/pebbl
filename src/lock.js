@@ -17,6 +17,15 @@ const STALE_MS = 30 * 1000; // a lock older than this is treated as abandoned
 const DEFAULT_TIMEOUT_MS = 10 * 1000;
 const POLL_MS = 25;
 
+// In-process held-lock set, keyed by lockfile path. The on-disk lock is an
+// O_EXCL file (NOT reentrant — a second tryAcquire in the same process would
+// EEXIST against our own lock and spin to the timeout), so a caller that is
+// ALREADY inside a withLock for this store must not try to take it again. The
+// lazy staleness check (staleness.js) consults isLocked() to skip its fold when
+// it would re-enter a lock the write path already holds — closing the
+// openDb→ensureFresh→withLock deadlock during a `pebbl log`/`compact`.
+const heldLocks = new Set();
+
 function sleep(ms) {
   // Synchronous spin-wait. The critical section (append a line + fold a
   // small tail) is sub-millisecond, so contention windows are tiny and a
@@ -72,13 +81,22 @@ function withLock(pebblDir, fn, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     }
     sleep(POLL_MS);
   }
+  heldLocks.add(lp);
   try {
     return fn();
   } finally {
     if (held) {
+      heldLocks.delete(lp);
       try { fs.unlinkSync(lp); } catch (err) { if (err.code !== 'ENOENT') throw err; }
     }
   }
 }
 
-module.exports = { withLock, lockPath };
+// True if THIS process currently holds the store lock for pebblDir. Used by the
+// lazy staleness check to avoid re-entering a lock the surrounding write path
+// already holds (the O_EXCL lock is not reentrant).
+function isLocked(pebblDir) {
+  return heldLocks.has(lockPath(pebblDir));
+}
+
+module.exports = { withLock, lockPath, isLocked };

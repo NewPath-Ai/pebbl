@@ -13,6 +13,7 @@ const commands = {
   search:       () => require('../src/search')(args),
   context:      () => require('../src/context')(args),
   compact:      () => require('../src/compact')(args),
+  rebuild:      () => require('../src/rebuild')(args),
   upgrade:      () => require('../src/upgrade')(),
   eject:        () => require('../src/eject')(),
   handoff:      () => require('../src/handoff')(args),
