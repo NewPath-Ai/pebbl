@@ -1,0 +1,167 @@
+'use strict';
+// P5 -- `pebbl audit-history`: the one-time, READ-ONLY backward scan over ALL
+// committed `.md` history. The forward git hooks only see NEW commits/pushes;
+// the design's Precondition (notes/design-event-sourcing-2026-06-17.md lines
+// 56-58) is that the leak is ALREADY in committed git history -- sw-factory's
+// tracked manual-logs.md carries the droplet IP+port, the sk-ant token shape,
+// and four credential paths across 174 commits. Before any store goes
+// `--shared`, an operator must SEE every historical leak and decide
+// rotate-vs-accept per finding.
+//
+// This command makes ZERO changes to git history or the working tree. It walks
+// `git log --all` for every blob of every tracked `*.md` file, runs the shared
+// 3-class detector (src/privacy-scan.js) per line, and prints a rotation
+// checklist: file, commit, line, class, and a rotate-vs-accept prompt. It never
+// edits, redacts, force-pushes, or stages anything -- append-only memory can't
+// forget, so a real leak must be ROTATED by a human, never "fixed" by this tool.
+//
+// Modeled on src/scan-commits.js: pure core (collect blobs, run detector),
+// separated from the CLI shell, never auto-acts. The git plumbing uses
+// `git log` / `git show` exactly like scan-commits' execSync(git log) pattern.
+
+const { execFileSync } = require('child_process');
+const path = require('path');
+const { findPebblDir } = require('./find-pebbl');
+const { scan, loadDenylist } = require('./privacy-scan');
+
+// Run a git command in repoRoot, returning stdout (or '' on failure). Read-only
+// by construction -- every call is a `log`/`ls-tree`/`show`, never a mutation.
+function git(repoRoot, args) {
+  try {
+    return execFileSync('git', args, {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return '';
+  }
+}
+
+// Every (commit, path) pair where a tracked *.md blob existed, across ALL refs.
+// `git log --all --name-only --format=%H --diff-filter=d` lists, per commit, the
+// .md paths touched. We pair each touched .md path with the commit so we scan
+// the blob AS IT WAS at that commit (catches a leak that was later deleted from
+// the working tree but still lives in history -- the whole point).
+function collectMdBlobs(repoRoot, git_) {
+  const g = git_ || ((args) => git(repoRoot, args));
+  const out = g(['log', '--all', '--no-merges', '--diff-filter=AM', '--name-only', '--format=%x00%H']);
+  const pairs = [];
+  let commit = null;
+  for (const lineRaw of out.split('\n')) {
+    const line = lineRaw.replace(/\r$/, '');
+    if (line.startsWith('\x00')) {
+      commit = line.slice(1).trim();
+      continue;
+    }
+    const p = line.trim();
+    if (!commit || !p) continue;
+    if (!/\.md$/i.test(p)) continue;
+    pairs.push({ commit, path: p });
+  }
+  // Dedupe identical (commit, path) -- a path can appear once per commit already,
+  // but a defensive Set keeps the scan from double-reporting.
+  const seen = new Set();
+  const deduped = [];
+  for (const pr of pairs) {
+    const k = `${pr.commit}:${pr.path}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    deduped.push(pr);
+  }
+  return deduped;
+}
+
+// Read one blob's content at a specific commit (`git show <commit>:<path>`).
+function showBlob(repoRoot, commit, p, git_) {
+  const g = git_ || ((args) => git(repoRoot, args));
+  return g(['show', `${commit}:${p}`]);
+}
+
+// Pure core: given the list of (commit, path) pairs and a blob reader, run the
+// detector over every blob and return a flat findings list. Each finding is one
+// (file, commit, line, class, match) the operator must rotate-or-accept.
+// `readBlob(commit, path) -> string` is injected so tests need no real git.
+function auditBlobs(pairs, readBlob, opts = {}) {
+  const denylist = loadDenylist(opts);
+  const findings = [];
+  for (const { commit, path: p } of pairs) {
+    const text = readBlob(commit, p);
+    if (!text) continue;
+    const hits = scan(text, { ...opts, _denylist: denylist });
+    for (const h of hits) {
+      findings.push({
+        file: p,
+        commit: commit.slice(0, 12),
+        line: h.line,
+        class: h.class,
+        match: h.match,
+        detail: h.detail,
+      });
+    }
+  }
+  return findings;
+}
+
+// Format the rotation checklist. One block per finding with a rotate-vs-accept
+// prompt. PURE -- returns a string, prints nothing, changes nothing.
+function formatChecklist(findings) {
+  if (findings.length === 0) {
+    return 'pebbl audit-history: no leak found in committed .md history. (Clean -- safe to consider --shared.)';
+  }
+  const lines = [];
+  lines.push('');
+  lines.push(`pebbl audit-history -- ${findings.length} potential leak${findings.length === 1 ? '' : 's'} in committed .md history.`);
+  lines.push('READ-ONLY: nothing was changed. Append-only memory cannot forget -- a real');
+  lines.push('secret in history is in every clone/fork forever and must be ROTATED, not redacted.');
+  lines.push('Decide ROTATE (the secret is live) or ACCEPT (already dead / not sensitive) per finding:');
+  lines.push('');
+  // group by class for a readable checklist
+  const byClass = new Map();
+  for (const f of findings) {
+    if (!byClass.has(f.class)) byClass.set(f.class, []);
+    byClass.get(f.class).push(f);
+  }
+  for (const [cls, group] of byClass) {
+    lines.push(`## ${cls}  (${group.length})`);
+    for (const f of group) {
+      lines.push(`  [ ] ROTATE / ACCEPT  ${f.match}`);
+      lines.push(`        ${f.detail} -- ${f.file}:${f.line} @ ${f.commit}`);
+    }
+    lines.push('');
+  }
+  lines.push('Next: for each ROTATE, rotate the credential/secret at its source (the audit');
+  lines.push('does NOT and CANNOT do this). This scan never edited git history or any file.');
+  return lines.join('\n');
+}
+
+module.exports = function auditHistory(args) {
+  void args;
+  const pebblDir = findPebblDir();
+  // repoRoot is the dir that holds .pebbl/ (or cwd if not inside a store -- the
+  // audit is about git history, so it still works without a .pebbl/).
+  const repoRoot = pebblDir ? path.dirname(path.resolve(pebblDir)) : process.cwd();
+
+  // Confirm we're in a git repo; otherwise there's no committed history to scan.
+  const inside = git(repoRoot, ['rev-parse', '--is-inside-work-tree']).trim();
+  if (inside !== 'true') {
+    console.error('pebbl audit-history: not inside a git repository -- nothing to scan.');
+    process.exit(1);
+  }
+
+  const opts = { pebblDir: pebblDir || undefined, repoRoot };
+  const pairs = collectMdBlobs(repoRoot);
+  const findings = auditBlobs(pairs, (commit, p) => showBlob(repoRoot, commit, p), opts);
+  console.log(formatChecklist(findings));
+  // Read-only: a non-zero exit would be reasonable to flag "leaks found" in CI,
+  // but this is an operator review command, not a gate -- exit 0 so it composes
+  // in a pipeline. The FORWARD hooks (pre-commit/pre-push) are the gate.
+};
+
+module.exports._internal = {
+  collectMdBlobs,
+  auditBlobs,
+  formatChecklist,
+  showBlob,
+};

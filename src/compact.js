@@ -3,14 +3,49 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openDb } = require('./db');
+const { openDb, notCorrected } = require('./db');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { qmdUpdate } = require('./qmd');
+const {
+  readEvents,
+  foldFull,
+  appendEventBatch,
+  makeSupersedeEvent,
+  makeResolveEvent,
+  makeExpireEvent,
+} = require('./events');
+const {
+  renderManualLogsMd,
+  renderHandoffsMd,
+  renderNarrativeMd,
+  renderCommitLogMd,
+  writeViewSqlite,
+} = require('./view');
+
+// Quarter label for a timestamp, e.g. "2026-04-15..." → "2026-Q2". Used as the
+// compactor bucket's time dimension (see key construction below).
+function quarterOf(timestamp) {
+  const ts = timestamp || '';
+  const year = ts.slice(0, 4);
+  const month = parseInt(ts.slice(5, 7), 10);
+  const q = month >= 1 && month <= 12 ? Math.ceil(month / 3) : 1;
+  return `${year}-Q${q}`;
+}
 
 function buildGroups(db, threshold, componentThreshold) {
+  // notCorrected(): never count or roll up a superseded entry (one another
+  // entry corrects). Same exclusion the nag and context views use — DRY.
+  //
+  // corrects IS NULL: also leave the CORRECTING entry out of rollups. A rollup
+  // INSERT writes corrects=NULL (one row can't carry many edges), so folding a
+  // correcting entry would drop its corrects edge and resurface the entry it
+  // superseded. Keeping correcting entries live preserves the edge — the
+  // guardrail "rollups must NOT drop corrects edges."
   const rows = db.prepare(`
     SELECT * FROM logs
     WHERE tier IN ('component', 'detail', 'fleeting')
+      AND corrects IS NULL
+      AND ${notCorrected()}
     ORDER BY timestamp
   `).all();
 
@@ -40,8 +75,15 @@ function buildGroups(db, threshold, componentThreshold) {
     }
 
     const primaryTopic = (row.topics || 'general').split(',')[0].trim();
-    const month = (row.timestamp || '').slice(0, 7);
-    const key = `${row.category}/${primaryTopic}/${month}`;
+    // Bucket by QUARTER, not month. A long-lived topic that earns a few entries
+    // a month never crossed a per-MONTH threshold, so it was permanently
+    // uncompactable — the nag promised compaction the executor could never
+    // deliver. A quarter widens the window ~3x while keeping a meaningful time
+    // label on each rollup (we still archive every source entry, so no history
+    // is lost). Chose quarter over "drop month + cap size" because the temporal
+    // label is useful in `[rollup] ... (2026-Q2)` and the existing archive-first
+    // path already caps blast radius per group.
+    const key = `${row.category}/${primaryTopic}/${quarterOf(row.timestamp)}`;
 
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
@@ -77,39 +119,21 @@ function unionTopics(entries) {
 function generateRollupMessage(entries) {
   const category = entries[0].category;
   const topic = (entries[0].topics || 'general').split(',')[0].trim();
-  const month = (entries[0].timestamp || '').slice(0, 7);
+  // Label by quarter to match the compactor bucket key (entries in one group
+  // share a quarter, not necessarily a month).
+  const quarter = quarterOf(entries[0].timestamp);
   const messages = entries.map(e => e.message.replace(/^\[rollup\]\s*/i, ''));
-  return `[rollup] ${category} notes on ${topic} (${month}): ${messages.join('; ')}.`;
+  return `[rollup] ${category} notes on ${topic} (${quarter}): ${messages.join('; ')}.`;
 }
 
-function archiveEntries(pebblDir, entries, archiveTs) {
-  const archiveDir = path.join(pebblDir, 'archive');
-  fs.mkdirSync(archiveDir, { recursive: true });
-
-  const month = archiveTs.slice(0, 7);
-  const archiveFile = path.join(archiveDir, `${month}.txt`);
-
-  let content = `=== Archived ${archiveTs} ===\n`;
-  for (const e of entries) {
-    content += `[id:${e.id}] [${e.tier}|${e.category}] topics:${e.topics || ''} — ${e.message}\n`;
-  }
-  content += '---\n';
-
-  fs.appendFileSync(archiveFile, content);
-
-  // Also append to a qmd-indexed projection so compacted history stays
-  // searchable. archive/*.txt is plain text qmd doesn't parse into entries;
-  // archive.md uses the same block format as manual-logs.md but marked
-  // tier:archived, so `pebbl search --include-archive` can find and rank it.
-  const archiveMd = path.join(pebblDir, 'archive.md');
-  let md = '';
-  for (const e of entries) {
-    const topicStr = e.topics || '';
-    md += `## ${e.timestamp} - ${e.message}\n`;
-    md += `<!-- cat:${e.category} topic:${topicStr} tier:archived source:${e.source || 'agent'} -->\n\n`;
-  }
-  fs.appendFileSync(archiveMd, md);
-}
+// NOTE (P3, event-sourcing): the old pre-transaction archive helper (the one
+// that wrote the per-month text + markdown side files) is DELETED, along with
+// the destructive transaction it guarded. Under the inversion the append-only
+// events.jsonl IS the durable record — a rolled-up/expired source entry stays
+// in the log forever (its eid sits in a live supersede's rolls_up / an expire's
+// target), so there is nothing to copy to a side file before "deleting" it.
+// Nothing is deleted: compaction only APPENDS supersede/resolve/expire events,
+// and the fold hides the originals from the live view. See executeMode below.
 
 function regenerateMarkdown(pebblDir) {
   const db = openDb(pebblDir);
@@ -155,7 +179,12 @@ function parseResolve(raw) {
 }
 
 module.exports = function compact(args) {
-  const { flags } = parseArgs(args);
+  // --auto is a compact-only flag not in args.js's KNOWN_FLAGS (args.js is out
+  // of the may-touch list). Detect it from raw args (same pattern context.js
+  // uses for raw --full), then strip it before parseArgs so parseArgs doesn't
+  // emit a spurious "unknown flag" warning for a flag we do support here.
+  const isAuto = args.includes('--auto');
+  const { flags } = parseArgs(args.filter(a => a !== '--auto'));
   const pebblDir = requirePebblDir();
   ensureProjectFiles(pebblDir);
   const db = openDb(pebblDir);
@@ -167,16 +196,23 @@ module.exports = function compact(args) {
     return previewMode(db, threshold, componentThreshold);
   }
 
+  // --auto: run the safe rollup unattended. resolveRaw=undefined means no
+  // ambiguous (uncategorized) entries are resolved, so they are skipped — never
+  // guessed. Archive-first + the SQLite transaction in executeMode are
+  // unchanged, so --auto is exactly --execute minus interactive resolution.
+  if (isAuto) {
+    return executeMode(db, pebblDir, config, undefined);
+  }
+
   if (flags.execute) {
     return executeMode(db, pebblDir, config, flags.resolve);
   }
 
-  console.error('Usage: pebbl compact --preview | pebbl compact --execute [--resolve id:action,...]');
+  console.error('Usage: pebbl compact --preview | pebbl compact --execute [--resolve id:action,...] | pebbl compact --auto');
   process.exit(1);
 };
 
 module.exports.buildGroups = buildGroups;
-module.exports.archiveEntries = archiveEntries;
 module.exports.regenerateMarkdown = regenerateMarkdown;
 module.exports.generateRollupMessage = generateRollupMessage;
 module.exports.unionTopics = unionTopics;
@@ -190,12 +226,12 @@ function previewMode(db, threshold, componentThreshold) {
   }
 
   for (const [key, entries] of groups) {
-    const [, topic, month] = key.split('/');
+    const [, topic, quarter] = key.split('/');
     const componentCount = entries.filter(e => e.tier === 'component').length;
     const isComponentGroup = componentCount > entries.length / 2;
     const label = isComponentGroup
-      ? `[component / ${topic} / ${month} — ${entries.length} entries] (consolidation)`
-      : `[detail / ${topic} / ${month} — ${entries.length} entries]`;
+      ? `[component / ${topic} / ${quarter} — ${entries.length} entries] (consolidation)`
+      : `[detail / ${topic} / ${quarter} — ${entries.length} entries]`;
     console.log(label);
     for (const e of entries) {
       console.log(`  [id:${e.id}] ${e.message}`);
@@ -252,74 +288,166 @@ function executeMode(db, pebblDir, config, resolveRaw) {
   }
 
   const { groups, ambiguous, fleeting } = buildGroups(db, threshold, componentThreshold);
-  const archiveTs = new Date().toISOString();
-
-  // Archive entries to disk first (safe operation)
-  const allToArchive = [];
-  for (const [, entries] of groups) {
-    allToArchive.push(...entries);
-  }
 
   // Filter fleeting by retention
   const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString();
   const expiredFleeting = fleeting.filter(e => (e.timestamp || '') < cutoff);
 
-  if (allToArchive.length > 0) {
-    archiveEntries(pebblDir, allToArchive, archiveTs);
+  // ── eid seam (P1 FK map, read side) ──────────────────────────────────────
+  // buildGroups read db.sqlite, whose rows carry a LOCAL integer `id`. The
+  // events the fold reads carry the only shared identity — the eid. To write a
+  // supersede whose `rolls_up` points at the rolled-up source entries (and a
+  // resolve/expire whose `target` names one), we translate each source row's
+  // int id -> its eid through the SAME fold that builds the read model: its
+  // surviving rows carry both `id` (the assigned local int) and `eid`.
+  // (design IDs para: "P1 already maps eid->local-int, so buildGroups' rows
+  // carry an eid to point at.") We never fabricate an eid: a row whose int has
+  // no eid in the map is skipped from the batch with a loud warning (the
+  // Friction the contract names — escalate, don't invent).
+  const intToEid = buildIntToEidMap(pebblDir);
+  const eidFor = (id, what) => {
+    const eid = intToEid.get(id);
+    if (!eid) {
+      console.warn(`Warning: no event eid for ${what} id ${id} (fold/db id drift) — skipping it from this compaction.`);
+    }
+    return eid || null;
+  };
+
+  // ── build the append-only batch (no row mutation) ────────────────────────
+  // Every rollup group -> one supersede event (rolls_up = source eids, carrying
+  // unionTopics + generateRollupMessage). Each --resolve id:foundation -> one
+  // resolve event. Each --resolve id:rollup AND each expired fleeting -> one
+  // expire event. These are appended together under ONE lock, then the read
+  // model is rebuilt ONCE from the fold — the append-only replacement for the
+  // old INSERT-rollup / DELETE-sources / UPDATE-foundation / DELETE-expired
+  // transaction. db.sqlite is NEVER written here; it is REBUILT from events.
+  const events = [];
+  let rolledUpCount = 0;
+
+  for (const [, entries] of groups) {
+    const rolls_up = [];
+    for (const e of entries) {
+      const eid = eidFor(e.id, 'rollup source');
+      if (eid) rolls_up.push(eid);
+    }
+    if (rolls_up.length === 0) continue; // nothing resolvable to roll up
+    rolledUpCount += rolls_up.length;
+    events.push(makeSupersedeEvent(pebblDir, {
+      rolls_up,
+      category: entries[0].category,
+      tier: 'detail',
+      message: generateRollupMessage(entries),
+      topics: unionTopics(entries),
+    }));
   }
-  if (expiredFleeting.length > 0) {
-    archiveEntries(pebblDir, expiredFleeting, archiveTs);
+
+  for (const [id, action] of resolveMap) {
+    const eid = eidFor(id, 'resolve target');
+    if (!eid) continue;
+    if (action === 'foundation') {
+      events.push(makeResolveEvent(pebblDir, { target: eid, to_tier: 'foundation' }));
+    } else if (action === 'rollup') {
+      // "rollup" with no real group to join = drop it from the live view; the
+      // append-only equivalent of the old DELETE is an expire event.
+      events.push(makeExpireEvent(pebblDir, { target: eid }));
+    }
+    // action 'skip' never reaches here (parseResolve keeps it, executeMode's
+    // resolve loop only acts on foundation/rollup — skip is a no-op by design).
   }
 
-  // SQLite transaction
-  const compacted = db.transaction(() => {
-    for (const [key, entries] of groups) {
-      const first = entries[0];
-      const rollupMsg = generateRollupMessage(entries);
-      const ts = new Date().toISOString();
+  for (const e of expiredFleeting) {
+    const eid = eidFor(e.id, 'expired fleeting');
+    if (eid) events.push(makeExpireEvent(pebblDir, { target: eid }));
+  }
 
-      db.prepare(`
-        INSERT INTO logs (timestamp, source, category, tier, message, topics, relates_to, corrects)
-        VALUES (?, 'agent', ?, 'detail', ?, ?, NULL, NULL)
-      `).run(ts, first.category, rollupMsg, unionTopics(entries));
+  if (events.length === 0) {
+    console.log('No entries ready for compaction.');
+    return;
+  }
 
-      const ids = entries.map(e => e.id);
-      db.prepare(`DELETE FROM logs WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
-    }
-
-    for (const [id, action] of resolveMap) {
-      if (action === 'foundation') {
-        db.prepare("UPDATE logs SET tier = 'foundation' WHERE id = ?").run(id);
-      } else if (action === 'rollup') {
-        db.prepare('DELETE FROM logs WHERE id = ?').run(id);
-      }
-    }
-
-    if (expiredFleeting.length > 0) {
-      const ids = expiredFleeting.map(e => e.id);
-      db.prepare(`DELETE FROM logs WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
-    }
+  // ONE locked batch-append + ONE rebuild. If the batch is interrupted mid-
+  // write there is no transaction to roll back and none is needed: each line
+  // already went through the P0 trailing-newline / torn-line invariant, so the
+  // already-written events stand and the next append/fold repairs a torn final
+  // line. The log is the durable record; there is nothing to "undo."
+  appendEventBatch(pebblDir, events, () => {
+    rebuildReadModelFromEvents(pebblDir);
   });
 
-  try {
-    compacted();
-  } catch (err) {
-    console.error('Compaction transaction failed:', err.message);
-    console.error('Archive files may have extra lines, but SQLite is unchanged.');
-    process.exit(1);
-  }
-
-  regenerateMarkdown(pebblDir);
   qmdUpdate(pebblDir);
 
-  console.log(`Compacted ${allToArchive.length} detail/component entries into rollups.`);
+  const supersedeCount = events.filter(e => e.type === 'supersede').length;
+  const resolveCount = events.filter(e => e.type === 'resolve').length;
+  console.log(`Compacted ${rolledUpCount} detail/component entries into ${supersedeCount} rollups (append-only).`);
   if (resolveMap.size > 0) {
-    const foundationCount = [...resolveMap.values()].filter(a => a === 'foundation').length;
+    const foundationCount = resolveCount;
     const rollupCount = [...resolveMap.values()].filter(a => a === 'rollup').length;
     console.log(`Resolved ${foundationCount + rollupCount} ambiguous entries (${foundationCount} foundation, ${rollupCount} rollup).`);
   }
   if (expiredFleeting.length > 0) {
-    console.log(`Deleted ${expiredFleeting.length} expired fleeting entries.`);
+    // Append-only: the originals stay in events.jsonl forever (their eid is an
+    // expire event's target); the fold just hides them from the live view.
+    console.log(`Expired ${expiredFleeting.length} fleeting entries (hidden, not deleted — originals remain in events.jsonl).`);
   }
   console.log('Done.');
+}
+
+// Build the int -> eid translation off the SAME fold that produces the read
+// model: foldFull(events).logs carries every surviving row's assigned local
+// integer `id` AND its `eid`. On a store whose db.sqlite int ids align with the
+// fold's (the common case — both assign 1..N in (ts) order), this resolves a
+// db.sqlite row's int id to its event eid. Returns a Map<int, eid>.
+function buildIntToEidMap(pebblDir) {
+  const map = new Map();
+  let projection;
+  try {
+    projection = foldFull(readEvents(pebblDir));
+  } catch (err) {
+    console.warn(`Warning: could not read events for eid map (${err.message}).`);
+    return map;
+  }
+  for (const row of projection.logs) {
+    if (row.id != null && row.eid) map.set(row.id, row.eid);
+  }
+  return map;
+}
+
+// Rebuild the read model from events.jsonl after a compaction batch is
+// appended. The fold hides rolled-up / resolved / expired entries (their eids
+// sit in a live supersede's rolls_up or an expire's target) and surfaces the
+// rollup row, so the regenerated view reflects the compaction WITHOUT any row
+// being deleted from the log. We rewrite db.sqlite (still the canonical read
+// path pre-P6-cutover) and the markdown projections + the disposable
+// view.sqlite from the one folded projection, so `pebbl context` / search see
+// the compacted state. db.sqlite is a REBUILT index here, never edited in place
+// — the destructive INSERT/DELETE/UPDATE is gone.
+function rebuildReadModelFromEvents(pebblDir) {
+  const projection = foldFull(readEvents(pebblDir));
+
+  // Markdown projections (browsing surfaces) from the byte-identical emitters.
+  fs.writeFileSync(path.join(pebblDir, 'manual-logs.md'), renderManualLogsMd(projection.logs));
+  fs.writeFileSync(path.join(pebblDir, 'handoffs.md'), renderHandoffsMd(projection.handoffs));
+  const narrativeMd = renderNarrativeMd(projection.narrative);
+  if (narrativeMd) fs.writeFileSync(path.join(pebblDir, 'narrative.md'), narrativeMd);
+  fs.writeFileSync(path.join(pebblDir, 'commit-log.md'), renderCommitLogMd(projection.commits));
+
+  // The disposable view.sqlite (P1 artifact) + the canonical db.sqlite read
+  // path, both rebuilt from the SAME projection so the live read sees the
+  // rollup. writeViewSqlite drops + recreates each file from the folded rows.
+  writeViewSqlite(projection, path.join(pebblDir, 'view.sqlite'));
+  writeViewSqlite(projection, path.join(pebblDir, 'db.sqlite'));
+
+  // writeViewSqlite uses the view schema (no `meta` table). The canonical read
+  // path opens db.sqlite through openDb -> migrate(), which keys off
+  // meta.schema_version; stamp it to the current version so a post-compaction
+  // read does NOT re-run (and re-log) every historical migration. Additive,
+  // matches db.js's schema floor.
+  const Database = require('better-sqlite3');
+  const cdb = new Database(path.join(pebblDir, 'db.sqlite'));
+  try {
+    cdb.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    cdb.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)").run('0.5');
+  } finally {
+    cdb.close();
+  }
 }

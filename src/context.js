@@ -3,7 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openDb, topicFilter } = require('./db');
+const { openDb, topicFilter, validAsOf, notCorrected, recordAccess } = require('./db');
+const { rankCandidates } = require('./rank');
+const { buildGroups } = require('./compact');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
 const { displayEntry } = require('./log');
 const { isThinEntry } = require('./detect-thin');
@@ -75,22 +77,57 @@ function getNarrativeUpdated(pebblDir) {
 
 // ── shared UI ────────────────────────────────────────────────────────────────
 
-function showOpenHandoff(db) {
+// Whole hours since an ISO timestamp, as a short label. Hour-granularity (the
+// open-handoff staleness signal needs sub-day resolution); relativeDate above
+// is day-granularity and used for the closed-handoff/topic dates, so the two
+// coexist intentionally.
+function hoursAgo(isoTimestamp) {
+  return Math.round((Date.now() - new Date(isoTimestamp).getTime()) / 3600000);
+}
+function hoursAgoText(isoTimestamp) {
+  const ago = hoursAgo(isoTimestamp);
+  return ago < 1 ? 'just now' : `${ago}h ago`;
+}
+
+function showOpenHandoff(db, pebblDir) {
   const hasHandoffsTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='handoffs'").get();
   if (!hasHandoffsTable) return;
 
-  const openHandoff = db.prepare("SELECT * FROM handoffs WHERE status = 'open' ORDER BY id DESC LIMIT 1").get();
-  if (!openHandoff) return;
+  // The handoffs table permits unlimited open rows and creating a handoff never
+  // closes priors, so opens stack. Fetch ALL of them (newest first) rather than
+  // a single LIMIT 1 slot that buries older opens with no count or signal.
+  const opens = db.prepare("SELECT * FROM handoffs WHERE status = 'open' ORDER BY id DESC").all();
+  if (opens.length === 0) return;
 
-  const ago = Math.round((Date.now() - new Date(openHandoff.timestamp).getTime()) / 3600000);
-  const agoText = ago < 1 ? 'just now' : `${ago}h ago`;
-  console.log(`── Open handoff from previous agent (#${openHandoff.id}, ${agoText}) ──`);
-  console.log(openHandoff.summary);
-  if (openHandoff.done)    console.log(`  previous agent completed: ${openHandoff.done}`);
-  if (openHandoff.todo)    console.log(`  remaining for you:        ${openHandoff.todo}`);
-  if (openHandoff.blocked) console.log(`  blocked:                  ${openHandoff.blocked}`);
-  if (openHandoff.topics)  console.log(`  topics:                   ${openHandoff.topics}`);
+  const config = loadConfig(pebblDir) || {};
+  const staleHours = (config.handoff && config.handoff.staleHours) || 48;
+
+  // Render the newest open in full — that is "today's" working handoff.
+  const newest = opens[0];
+  console.log(`── Open handoff from previous agent (#${newest.id}, ${hoursAgoText(newest.timestamp)}) ──`);
+  console.log(newest.summary);
+  if (newest.done)    console.log(`  previous agent completed: ${newest.done}`);
+  if (newest.todo)    console.log(`  remaining for you:        ${newest.todo}`);
+  if (newest.blocked) console.log(`  blocked:                  ${newest.blocked}`);
+  if (newest.topics)  console.log(`  topics:                   ${newest.topics}`);
+  if (hoursAgo(newest.timestamp) >= staleHours) {
+    console.log(`  ⚠ stale: open ${hoursAgo(newest.timestamp)}h (≥ ${staleHours}h threshold)`);
+  }
   console.log('  → when you finish the remaining work, run: pebbl handoff --close');
+
+  // One-line rollup for the rest, so stacked opens are visible and drainable.
+  if (opens.length > 1) {
+    const oldest = opens[opens.length - 1];
+    console.log(
+      `  ⚠ ${opens.length} open handoffs (oldest #${oldest.id}, ${hoursAgo(oldest.timestamp)}h ago) ` +
+      `— run pebbl handoff --list-open`
+    );
+    const stale = opens.filter(h => hoursAgo(h.timestamp) >= staleHours);
+    if (stale.length > 0) {
+      const ids = stale.map(h => `#${h.id}`).join(', ');
+      console.log(`  ⚠ ${stale.length} stale (≥ ${staleHours}h): ${ids}`);
+    }
+  }
   console.log('──');
   console.log('');
 }
@@ -158,31 +195,33 @@ function showMirrors(pebblDir) {
   }
 }
 
+// The nag must report ONLY what `pebbl compact --preview` would actually roll
+// up — one source of truth. The old query counted a flat per-topic population
+// (no category, no quarter bucket, no component_threshold, no corrected-entry
+// exclusion), so it promised compaction the executor could never deliver and
+// fired forever. Now it calls the same buildGroups() the executor uses: every
+// reported group has already passed its effective threshold (component groups
+// need component_threshold, default 15), so the count is honest.
 function showCompactionNotifications(db, pebblDir) {
   const config = loadConfig(pebblDir) || {};
   const threshold = (config.compaction && config.compaction.threshold) || 10;
+  const componentThreshold = (config.compaction && config.compaction.component_threshold) || 15;
 
-  const compactable = db.prepare(`
-    SELECT topics, COUNT(*) as cnt FROM logs
-    WHERE tier IN ('component','detail','fleeting')
-      AND topics IS NOT NULL AND topics != ''
-    GROUP BY topics HAVING cnt >= ?
-  `).all(threshold);
+  const { groups } = buildGroups(db, threshold, componentThreshold);
 
-  for (const row of compactable) {
-    const topicList = (row.topics || '').split(',').map(t => t.trim());
-    for (const t of topicList) {
-      if (!t) continue;
-      const filter = topicFilter(t);
-      const topicCount = db.prepare(`
-        SELECT COUNT(*) as cnt FROM logs
-        WHERE tier IN ('component','detail','fleeting')
-          ${filter.clause}
-      `).get(...filter.params);
-      if (topicCount && topicCount.cnt >= threshold) {
-        console.log(`[pebbl] ${topicCount.cnt} entries on '${t}' ready for compaction. Run: pebbl compact --preview`);
-      }
-    }
+  for (const [key, entries] of groups) {
+    const topic = key.split('/')[1];
+    console.log(`[pebbl] ${entries.length} entries on '${topic}' ready for compaction. Run: pebbl compact --preview`);
+  }
+
+  // Compaction-on-release: a SOFT reminder only (design Q2=A). Now that
+  // compaction is append-only, it is the natural thing to run before sharing /
+  // releasing a store so the rollups are in the committed log. This is a
+  // notification, NEVER an interlock — it does not block, error, or change the
+  // exit code. The fold dedups overlapping rollups, so skipping it is "ugly,
+  // not broken." Harden later only if duplicate rollups appear in practice.
+  if (groups.size > 0) {
+    console.log('[pebbl] tip: compaction is append-only now — consider running it before you release/share this store.');
   }
 }
 
@@ -222,7 +261,7 @@ function checkDrift(pebblDir, db) {
 function contextDefault(pebblDir, db) {
   const cwd = process.cwd();
 
-  showOpenHandoff(db);
+  showOpenHandoff(db, pebblDir);
 
   // ── Section 1: NARRATIVE ──
 
@@ -262,7 +301,7 @@ function contextDefault(pebblDir, db) {
     FROM logs
     WHERE tier IN ('foundation', 'component')
       AND topics IS NOT NULL AND topics != ''
-      AND id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL)
+      AND ${notCorrected()}
     GROUP BY topics, tier
     ORDER BY last_updated DESC
   `).all();
@@ -310,15 +349,23 @@ function contextDefault(pebblDir, db) {
   }
 
   // ── Section 3: RECENT ACTIVITY ──
-
-  const recentRows = db.prepare(`
-    SELECT id, timestamp, source, category, tier, message, topics
+  //
+  // Ordering CHANGED (v0.7): rerank rankCandidates replaces the old `id DESC`
+  // (newest-first) cut. This is the live read-path wiring — what an entry IS
+  // (importance/usage/recency) now decides what surfaces here, not just when it
+  // was written. The current-belief filter (valid_to IS NULL, via notCorrected)
+  // and the non-fleeting tier set are kept; rerank only reorders the same
+  // candidate set. Section keeps the --- RECENT --- label (it is still the
+  // "what should I look at" section) even though it is no longer strictly
+  // newest-first. relevance is flat/0 here (no qmd in context), as expected.
+  const recentCandidates = db.prepare(`
+    SELECT id, timestamp, source, category, tier, message, topics,
+           importance, access_count, last_accessed
     FROM logs
     WHERE tier IN ('foundation', 'component', 'detail')
-      AND id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL)
-    ORDER BY id DESC
-    LIMIT 5
+      AND ${notCorrected()}
   `).all();
+  const recentRows = rankCandidates(recentCandidates).slice(0, 5);
 
   console.log('--- RECENT ---');
   if (recentRows.length === 0) {
@@ -331,6 +378,13 @@ function contextDefault(pebblDir, db) {
   console.log('---');
   console.log('');
 
+  // NO recordAccess here (FIX 1). The default `pebbl context` dump is a broad
+  // session-start render — printing the top-5 RECENT slate is NOT the user
+  // intentionally looking an entry up. Counting it would make access_count track
+  // how often an entry was PRINTED (a rich-get-richer print-frequency loop), not
+  // how often it was genuinely retrieved, polluting the very usage signal rerank
+  // reads. rerank ORDERING still applies to this read (ordering by current usage
+  // is fine); only the increment WRITE is gated to intentional lookups.
   showRecentHandoffs(db);
 
   showMirrors(pebblDir);
@@ -343,9 +397,11 @@ function contextDefault(pebblDir, db) {
 function contextFull(pebblDir, db, flags) {
   const cwd = process.cwd();
 
-  showOpenHandoff(db);
+  showOpenHandoff(db, pebblDir);
 
-  let sql = 'SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL) AND 1=1';
+  let sql = `SELECT id, timestamp, source, category, tier, message, topics,
+                    importance, access_count, last_accessed
+             FROM logs WHERE ${notCorrected()} AND 1=1`;
   const params = [];
 
   if (flags.cat) {
@@ -366,9 +422,12 @@ function contextFull(pebblDir, db, flags) {
     params.push(...filter.params);
   }
 
-  sql += ` ORDER BY CASE tier WHEN 'foundation' THEN 0 WHEN 'component' THEN 1 WHEN 'detail' THEN 2 WHEN 'fleeting' THEN 3 ELSE 4 END, id DESC LIMIT 10`;
-
-  const rows = db.prepare(sql).all(...params);
+  // Ordering CHANGED (v0.7): the old tier-then-id (CASE tier..., id DESC) cut is
+  // replaced by rerank rankCandidates over the filtered current-belief set. The
+  // WHERE filters (current belief + cat/tier/source/topic) are unchanged; rerank
+  // only reorders, then we take the same top 10.
+  const candidates = db.prepare(sql).all(...params);
+  const rows = rankCandidates(candidates).slice(0, 10);
 
   console.log('--- PROJECT MEMORY ---');
   if (rows.length === 0) {
@@ -380,6 +439,11 @@ function contextFull(pebblDir, db, flags) {
   }
   console.log('---');
 
+  // NO recordAccess here (FIX 1). --full is a broad memory dump (up to 10 rows,
+  // optionally filtered), the session-start "show me everything" view — not a
+  // targeted retrieval of a specific entry. Counting it would inflate access_count
+  // by print frequency. rerank still reorders this read; only the increment is
+  // gated to intentional lookups (contextTopic).
   showCompactionNotifications(db, pebblDir);
 }
 
@@ -388,40 +452,39 @@ function contextFull(pebblDir, db, flags) {
 function contextTopic(pebblDir, db, topic, flags) {
   const cwd = process.cwd();
 
-  showOpenHandoff(db);
+  showOpenHandoff(db, pebblDir);
 
   const filter = topicFilter(topic);
+  const COLS = `id, timestamp, source, category, tier, message, topics,
+                importance, access_count, last_accessed`;
 
   // 1. ALL foundation entries (regardless of topic)
-  let sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'foundation' AND id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL)`;
+  let sql = `SELECT ${COLS} FROM logs WHERE tier = 'foundation' AND ${notCorrected()}`;
   const fParams = [];
   if (flags.cat) { sql += ' AND category = ?'; fParams.push(flags.cat); }
-  sql += ' ORDER BY id DESC';
   const foundationRows = db.prepare(sql).all(...fParams);
 
   // 2. ALL component entries matching the topic
-  sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'component' AND id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL) ${filter.clause}`;
+  sql = `SELECT ${COLS} FROM logs WHERE tier = 'component' AND ${notCorrected()} ${filter.clause}`;
   const cParams = [...filter.params];
   if (flags.cat) { sql += ' AND category = ?'; cParams.push(flags.cat); }
-  sql += ' ORDER BY id DESC';
   const componentRows = db.prepare(sql).all(...cParams);
 
-  // 3. Recent detail entries matching the topic (limit 5)
-  sql = `SELECT id, timestamp, source, category, tier, message, topics FROM logs WHERE tier = 'detail' AND id NOT IN (SELECT corrects FROM logs WHERE corrects IS NOT NULL) ${filter.clause}`;
+  // 3. Recent detail entries matching the topic (limit 5). The SELECTION of
+  // which details to consider stays recency-based (newest 5) — that is a
+  // candidate-set policy, not the final display order — so the id DESC LIMIT 5
+  // is kept here intentionally.
+  sql = `SELECT ${COLS} FROM logs WHERE tier = 'detail' AND ${notCorrected()} ${filter.clause}`;
   const dParams = [...filter.params];
   if (flags.cat) { sql += ' AND category = ?'; dParams.push(flags.cat); }
   sql += ' ORDER BY id DESC LIMIT 5';
   const detailRows = db.prepare(sql).all(...dParams);
 
-  // Combine and sort: foundation first, then component, then detail; newest first within each tier
-  const allRows = [...foundationRows, ...componentRows, ...detailRows];
-  const tierOrder = { foundation: 0, component: 1, detail: 2 };
-  allRows.sort((a, b) => {
-    const ta = tierOrder[a.tier] !== undefined ? tierOrder[a.tier] : 3;
-    const tb = tierOrder[b.tier] !== undefined ? tierOrder[b.tier] : 3;
-    if (ta !== tb) return ta - tb;
-    return b.id - a.id;
-  });
+  // Ordering CHANGED (v0.7): the combined slate was sorted tier-then-id (newest
+  // first within each tier); it is now ordered by rerank rankCandidates over the
+  // same combined candidate set (all foundation + on-topic component + 5 newest
+  // on-topic detail). The current-belief filter is unchanged on every fetch.
+  const allRows = rankCandidates([...foundationRows, ...componentRows, ...detailRows]);
 
   console.log(`--- TOPIC: ${topic} ---`);
   if (allRows.length === 0) {
@@ -433,7 +496,58 @@ function contextTopic(pebblDir, db, topic, flags) {
   }
   console.log('---');
 
+  // recordAccess fires HERE (FIX 1): `pebbl context --topic <x>` is the targeted
+  // retrieval path — the user asking "what do we know about X" and getting the
+  // entries on that topic. THIS is an intentional lookup, so counting it makes
+  // access_count mean "how often this entry was deliberately looked up" rather
+  // than "how often it was printed in a dump". Guarded (no-op under the test
+  // suite via NODE_TEST_CONTEXT) and deduped inside recordAccess.
+  recordAccess(db, allRows.map(r => r.id));
+
   showCompactionNotifications(db, pebblDir);
+}
+
+// ── mode: as-of (bi-temporal point-in-time, activated via --as-of) ──────────
+//
+// Memory as it was BELIEVED on a given date. Unlike the default/topic/full
+// views (which show only valid_to IS NULL — the current belief), this returns
+// the rows whose validity interval covers <date>: started on/before it and not
+// yet superseded as of it. This is how the timeline survives a correction —
+// the superseded belief reappears when you ask about a date before it stopped.
+function contextAsOf(pebblDir, db, date, flags) {
+  const cwd = process.cwd();
+  let sql = `SELECT id, timestamp, source, category, tier, message, topics
+             FROM logs
+             WHERE ${validAsOf()}`;
+  const params = [date, date];
+
+  if (flags.cat)    { sql += ' AND category = ?'; params.push(flags.cat); }
+  if (flags.tier)   { sql += ' AND tier = ?';     params.push(flags.tier); }
+  if (flags.source) { sql += ' AND source = ?';   params.push(flags.source); }
+  if (flags.topic) {
+    const filter = topicFilter(flags.topic);
+    sql += ' ' + filter.clause;
+    params.push(...filter.params);
+  }
+  sql += ` ORDER BY CASE tier WHEN 'foundation' THEN 0 WHEN 'component' THEN 1 WHEN 'detail' THEN 2 WHEN 'fleeting' THEN 3 ELSE 4 END, id DESC LIMIT 20`;
+
+  const rows = db.prepare(sql).all(...params);
+
+  // NOTE: as-of is a bitemporal TIME-TRAVEL view (validAsOf, not the current-
+  // belief filter) — it deliberately shows beliefs as they stood on <date>,
+  // including ones since superseded. It is NOT a current-belief read, so it
+  // keeps its tier-then-id ordering (rerank is wired only into the current-
+  // belief reads per this slice) and does NOT increment access_count (counting a
+  // historical reconstruction would distort the live usage signal).
+  console.log(`--- MEMORY AS OF ${date} ---`);
+  if (rows.length === 0) {
+    console.log('(nothing was believed as of that date)');
+  } else {
+    for (const row of rows) {
+      showEntryWithThinCheck(row, cwd);
+    }
+  }
+  console.log('---');
 }
 
 // ── exported entry point ─────────────────────────────────────────────────────
@@ -447,7 +561,9 @@ module.exports = function context(args) {
   // Check raw args for --full since it is not in KNOWN_FLAGS
   const isFull = args.includes('--full');
 
-  if (isFull) {
+  if (flags['as-of']) {
+    contextAsOf(pebblDir, db, flags['as-of'], flags);
+  } else if (isFull) {
     contextFull(pebblDir, db, flags);
   } else if (flags.topic) {
     contextTopic(pebblDir, db, flags.topic, flags);
@@ -458,4 +574,8 @@ module.exports = function context(args) {
   } else {
     contextDefault(pebblDir, db);
   }
+
+  // Search-first nudge: context shows the curated index, but superseded or
+  // corrected decisions that grep can't surface live in the search corpus.
+  console.log("before deciding in an area you don't see above, run pebbl search '<area>' — catches superseded choices grep can't");
 };

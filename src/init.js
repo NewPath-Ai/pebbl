@@ -32,12 +32,112 @@ ${AGENT_END}
 
 const AGENT_STANDALONE = `# Agent Guidelines\n${AGENT_SECTION}`;
 
-const HOOK_SCRIPT = `#!/bin/sh
+// post-commit hook. Captures the commit into pebbl memory, then `pebbl
+// log-commit` reindexes for search. Incident 2026-06-18 hardened the embed:
+//   - BYPASS: PEBBL_NO_HOOK / PEBBL_DISABLE_EMBED make log-commit STILL write the
+//     commit-log/db row but skip `qmd update` (the test harness sets it so a burst
+//     of fixture commits fires zero live embeds). Honored inside log-commit, so we
+//     intentionally do NOT early-exit the hook — the row must still be written.
+//   - The reindex log-commit kicks is a DETACHED background job with a
+//     single-flight lock per store, so a commit never blocks on, or fans out, an
+//     embed.
+//
+// PINNING (same pattern as the P5 hooks below): the hook bakes in the ABSOLUTE
+// path of the bin/pebbl.js that ran `init`, invoked via `node`, so it ALWAYS runs
+// the pebbl that installed it — not whatever `pebbl` is first on $PATH. This is
+// load-bearing for the bypass: a stale GLOBAL `pebbl` on $PATH (one built before
+// this incident, with no PEBBL_DISABLE_EMBED awareness) would otherwise run the
+// old blocking embed and ignore the var entirely, re-triggering the thrash even
+// though the installed code honors it. Falls back to a PATH `pebbl` only if the
+// pinned bin is gone. Keep this template in sync with src/upgrade.js.
+function postCommitHook(pinnedBin) {
+  const pin = String(pinnedBin).replace(/'/g, `'\\''`); // shell-safe single-quote
+  return `#!/bin/sh
+# pebbl post-commit: capture the commit + reindex for search.
+# Embed bypass (incident 2026-06-18): set PEBBL_NO_HOOK=1 or PEBBL_DISABLE_EMBED=1
+# to write the commit row but skip the \`qmd update\` embed. The embed itself runs
+# DETACHED in the background (never blocks the commit) with a per-store single-flight lock.
 HASH=$(git log -1 --pretty=%H)
 MESSAGE=$(git log -1 --pretty=%B)
 FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | tr '\\n' ',')
+# Pin the pebbl that installed this hook so the bypass + background behavior is the
+# INSTALLED code's, not a stale \`pebbl\` first on \$PATH.
+PINNED='${pin}'
+if [ -n "$PINNED" ] && [ -f "$PINNED" ]; then
+  exec node "$PINNED" log-commit "$HASH" "$MESSAGE" "$FILES"
+fi
 pebbl log-commit "$HASH" "$MESSAGE" "$FILES"
 `;
+}
+
+// Backward-compatible unpinned template (no installing-bin path baked in). Kept
+// for callers/tests that reference HOOK_SCRIPT directly; the INSTALLED hook uses
+// the pinned postCommitHook() above.
+const HOOK_SCRIPT = postCommitHook('');
+
+// P4 — post-merge / post-checkout rebuild trigger. A `git merge` or
+// `git checkout` can pull NEW events.jsonl lines into the store (the whole
+// point of committed, shared memory), but the view (view.sqlite + markdown) is
+// derived and gitignored, so it would be stale until something rebuilt it.
+// These hooks DO NOT fold inline — folding the whole log inside a git hook
+// would make every pull/checkout slow and could block on the lock. They only
+// TOUCH a sentinel; the actual rebuild is LAZY, done by the staleness check
+// (src/staleness.js, wired into openDb) on the very next pebbl command. The
+// sentinel is a cheap, idempotent marker that a rebuild is due. mkdir -p guards
+// the case where .pebbl/ isn't present in the checked-out tree yet.
+const REBUILD_HOOK_SCRIPT = `#!/bin/sh
+# pebbl P4: mark the view stale after a merge/checkout pulled new events.
+# The rebuild itself is lazy — it happens on the next \`pebbl\` command, never
+# here (folding inline would make every pull/checkout slow).
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -d "$ROOT/.pebbl" ] || exit 0
+: > "$ROOT/.pebbl/.rebuild-needed" 2>/dev/null || true
+exit 0
+`;
+
+// P5 — the pre-commit / pre-push secret-scan hooks. The forward gate (design
+// Privacy line 41: "scan in git PRE-COMMIT and PRE-PUSH on every commit, not
+// one-shot at init"). The hook shells into THIS pebbl's `privacy-scan` and exits
+// non-zero on a hit, refusing the commit/push.
+//
+// Pebbl RESOLUTION is the subtle part. We bake in the ABSOLUTE path of the
+// bin/pebbl.js that ran `init` (resolved below), invoked via `node`, so the hook
+// always calls the exact pebbl that installed it — independent of $PATH. That
+// matters because a DIFFERENT pebbl might be first on $PATH (e.g. a globally
+// installed build that predates the `privacy-scan` command); calling it would
+// error "unknown command" and wrongly BLOCK every commit. So:
+//   1. the pinned `node <installing-bin> privacy-scan` if that bin still exists,
+//   2. else a repo-local node_modules/.bin/pebbl,
+//   3. else a PATH `pebbl` ONLY IF it understands `privacy-scan` (probed),
+//   4. else exit 0 (allow) — a hook that hard-fails on a missing/old binary
+//      would block every commit and get deleted; audit-history is the backstop.
+// PEBBL_SKIP_SCAN=1 is an explicit operator escape hatch.
+function hookScript(mode, pinnedBin) {
+  // mode: '--staged' (pre-commit) or '--push' (pre-push).
+  const human = mode === '--push'
+    ? 'pre-push secret/PII scan + public-repo hard gate. A PUBLIC remote blocks the\n# push until `pebbl audit-history` is clean (clears once clean; re-applies on a\n# once-private remote going public).'
+    : 'pre-commit secret/PII scan. Refuses a commit that would write a non-RFC1918\n# IP+port, a credential file path, a token shape, or a denylisted name into\n# shared, append-only memory (which can never un-leak it).';
+  // pinnedBin is embedded as a shell-safe single-quoted literal.
+  const pin = String(pinnedBin).replace(/'/g, `'\\''`);
+  return `#!/bin/sh
+# pebbl P5: ${human}
+[ -n "$PEBBL_SKIP_SCAN" ] && exit 0
+PINNED='${pin}'
+if [ -n "$PINNED" ] && [ -f "$PINNED" ]; then
+  exec node "$PINNED" privacy-scan ${mode}
+fi
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+if [ -x "$ROOT/node_modules/.bin/pebbl" ]; then
+  exec "$ROOT/node_modules/.bin/pebbl" privacy-scan ${mode}
+fi
+# A PATH pebbl is used ONLY if it understands privacy-scan (an older global
+# build that doesn't would otherwise hard-block every commit).
+if command -v pebbl >/dev/null 2>&1 && pebbl help privacy-scan >/dev/null 2>&1; then
+  exec pebbl privacy-scan ${mode}
+fi
+exit 0
+`;
+}
 
 function init() {
   const cwd = process.cwd();
@@ -74,28 +174,84 @@ function init() {
   openDb(pebblDir);
   console.log('Initialized db.sqlite');
 
-  // Git hook
+  // Git hooks
   const gitDir = path.join(cwd, '.git');
   if (fs.existsSync(gitDir)) {
-    const hookPath = path.join(gitDir, 'hooks', 'post-commit');
-    fs.writeFileSync(hookPath, HOOK_SCRIPT, { mode: 0o755 });
+    const hooksDir = path.join(gitDir, 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    // writeFileSync's `mode` only applies on CREATE — an existing hook keeps its
+    // old mode — so chmod explicitly after writing to guarantee +x on re-init.
+    const writeHook = (name, body) => {
+      const p = path.join(hooksDir, name);
+      fs.writeFileSync(p, body, { mode: 0o755 });
+      fs.chmodSync(p, 0o755);
+    };
+    // Absolute path of THIS bin/pebbl.js — pinned into the hooks so they run the
+    // pebbl that installed them, not whatever `pebbl` is first on $PATH (used by
+    // both the post-commit and the P5 pre-commit/pre-push hooks below).
+    const pinnedBin = path.resolve(__dirname, '..', 'bin', 'pebbl.js');
+    writeHook('post-commit', postCommitHook(pinnedBin));
     console.log('Installed post-commit hook');
+    // P4: post-merge + post-checkout mark the view stale (sentinel touch only);
+    // the rebuild is lazy on the next pebbl command, never inside the hook.
+    writeHook('post-merge', REBUILD_HOOK_SCRIPT);
+    writeHook('post-checkout', REBUILD_HOOK_SCRIPT);
+    console.log('Installed post-merge and post-checkout rebuild hooks');
+    // P5: pre-commit + pre-push secret/PII scanner, installed ADDITIVELY
+    // alongside the hooks above (a forward gate runs on every commit/push, not
+    // one-shot at init). These do NOT replace the post-* hooks. They reuse the
+    // same pinnedBin computed above so they always run the pebbl that installed
+    // them, not whatever pebbl happens to be first on $PATH.
+    writeHook('pre-commit', hookScript('--staged', pinnedBin));
+    writeHook('pre-push', hookScript('--push', pinnedBin));
+    console.log('Installed pre-commit and pre-push privacy-scan hooks');
   } else {
-    console.log('No .git/ found — skipping git hook (run inside a git repo to enable).');
+    console.log('No .git/ found — skipping git hooks (run inside a git repo to enable).');
   }
 
   // .gitignore
+  // Two lines, both ADDITIVE and idempotent:
+  //  - `.pebbl/`              today's default: the whole store is local (the
+  //                           DEFAULT=LOCAL behavior). db.sqlite/view.sqlite are
+  //                           always disposable and never committed.
+  //  - `.pebbl/events.local.jsonl`  P5: the PRIVATE half of the two-file split.
+  //                           This file is ALWAYS gitignored, even once a store
+  //                           goes --shared (when the `.pebbl/` blanket ignore is
+  //                           relaxed for events.jsonl, this explicit line keeps
+  //                           the local/private events out of git transport).
   const gitignore = path.join(cwd, '.gitignore');
-  const entry = '.pebbl/\n';
-  if (fs.existsSync(gitignore)) {
-    const existing = fs.readFileSync(gitignore, 'utf8');
-    if (!existing.includes('.pebbl/')) {
-      fs.appendFileSync(gitignore, `\n${entry}`);
-      console.log('Added .pebbl/ to .gitignore');
+  const ensureIgnoreLine = (line, label) => {
+    if (fs.existsSync(gitignore)) {
+      const existing = fs.readFileSync(gitignore, 'utf8');
+      if (!existing.split('\n').some((l) => l.trim() === line)) {
+        const sep = existing.endsWith('\n') || existing === '' ? '' : '\n';
+        fs.appendFileSync(gitignore, `${sep}${line}\n`);
+        console.log(`Added ${label} to .gitignore`);
+      }
+    } else {
+      fs.writeFileSync(gitignore, `${line}\n`);
+      console.log(`Created .gitignore with ${label}`);
+    }
+  };
+  ensureIgnoreLine('.pebbl/', '.pebbl/');
+  ensureIgnoreLine('.pebbl/events.local.jsonl', '.pebbl/events.local.jsonl (private events)');
+
+  // .gitattributes — install the union merge driver for events.jsonl.
+  // MANDATORY for clean multi-contributor merge: without `merge=union`,
+  // two appends after the same last line conflict. Idempotent: only add
+  // the line if it isn't already present (don't duplicate on re-init).
+  const gitattributes = path.join(cwd, '.gitattributes');
+  const attrLine = '.pebbl/events.jsonl merge=union';
+  if (fs.existsSync(gitattributes)) {
+    const existing = fs.readFileSync(gitattributes, 'utf8');
+    if (!existing.split('\n').some((l) => l.trim() === attrLine)) {
+      const sep = existing.endsWith('\n') || existing === '' ? '' : '\n';
+      fs.appendFileSync(gitattributes, `${sep}${attrLine}\n`);
+      console.log('Added events.jsonl merge=union to .gitattributes');
     }
   } else {
-    fs.writeFileSync(gitignore, entry);
-    console.log('Created .gitignore with .pebbl/');
+    fs.writeFileSync(gitattributes, `${attrLine}\n`);
+    console.log('Created .gitattributes with events.jsonl merge=union');
   }
 
   // AGENTS.md — create or append, never overwrite user content outside the sentinels
@@ -147,3 +303,7 @@ module.exports = init;
 module.exports.AGENT_SECTION = AGENT_SECTION;
 module.exports.AGENT_BEGIN = AGENT_BEGIN;
 module.exports.AGENT_END = AGENT_END;
+// Exported so src/upgrade.js installs the SAME pinned post-commit hook (DRY —
+// one template, no drift between init and upgrade).
+module.exports.postCommitHook = postCommitHook;
+module.exports.HOOK_SCRIPT = HOOK_SCRIPT;

@@ -13,6 +13,7 @@ const commands = {
   search:       () => require('../src/search')(args),
   context:      () => require('../src/context')(args),
   compact:      () => require('../src/compact')(args),
+  rebuild:      () => require('../src/rebuild')(args),
   upgrade:      () => require('../src/upgrade')(),
   eject:        () => require('../src/eject')(),
   handoff:      () => require('../src/handoff')(args),
@@ -20,8 +21,16 @@ const commands = {
   feedback:     () => require('../src/feedback')(args),
   check:        () => require('../src/check')(args),
   'scan-commits': () => require('../src/scan-commits')(args),
+  'audit-history': () => require('../src/audit-history')(args),
+  'privacy-scan': () => require('../src/privacy-scan').cli(args),
   'log-commit': () => require('../src/log-commit')(args[0], args[1], args[2]),
+  'migrate-to-events': () => require('../src/migrate-to-events')(args),
+  cutover:      () => require('../src/cutover')(args),
 };
+
+// P6: `cutover` owns its own --help (the runbook lives once in src/cutover.js,
+// DRY), so it must NOT be intercepted by the generic help table below.
+const ownsHelp = new Set(['cutover']);
 
 if (!command || command === '--help' || command === '-h') {
   help.printToplevel();
@@ -35,7 +44,7 @@ if (command === 'help') {
   process.exit(0);
 }
 
-if (wantsHelp(args)) {
+if (wantsHelp(args) && !ownsHelp.has(command)) {
   if (command in commands) { help.printSubcommand(command); process.exit(0); }
   help.printToplevel();
   process.exit(0);

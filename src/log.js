@@ -1,12 +1,32 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { parseArgs } = require('./args');
+const { parseArgs, assertCompleteFlags, assertIntegerFlags } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
-const { qmdUpdate } = require('./qmd');
+const { qmdUpdateDeferred } = require('./qmd');
 const { loadRubric, classifyEntry, ensureProjectFiles } = require('./rubric');
 const { isThinEntry } = require('./detect-thin');
+const { execFileSync } = require('child_process');
+const { appendLogEvent } = require('./events');
+const { detectRemoteVisibility } = require('./privacy-scan');
+const { importanceForTier } = require('./rank');
+
+// P5 — foundation private-by-default (design Q3=B). Decide whether THIS entry's
+// event goes to the PRIVATE events.local.jsonl (machine-only) or the SHARED
+// events.jsonl (git-transported). Pure + testable: the visibility string is
+// passed in. Rule:
+//   - Only FOUNDATION-tier entries are ever private-by-default.
+//   - That default applies ONLY on a PUBLIC remote (Q3=B — a private repo is
+//     already the trust boundary, so foundation shares freely there).
+//   - `--share` overrides the default and forces the SHARED file even on public.
+// So: route local  <=>  tier === 'foundation' && visibility === 'public' && !share.
+// On 'private' or 'unknown' visibility, foundation shares freely (returns false).
+function shouldRouteLocal({ tier, share, visibility }) {
+  if (tier !== 'foundation') return false;     // only foundation is private-by-default
+  if (share) return false;                     // explicit opt-in to shared
+  return visibility === 'public';              // private-by-default on public only
+}
 
 const VALID_CATEGORIES = [
   'decision', 'structure', 'pattern', 'data', 'integration', 'quality',
@@ -41,8 +61,71 @@ function formatEntry(timestamp, message, category, tier, source, topics) {
   return { comment, out };
 }
 
+// Print the linear supersession chain for one entry. The chain is followed in
+// both directions from the given id: backward via `corrects` to the root
+// belief, then forward via `invalidated_by` to the current one. Each link
+// shows when it stopped being true and what replaced it, so an agent can read
+// the decision's evolution instead of just its latest state.
+function printHistory(pebblDir, id) {
+  const db = openDb(pebblDir);
+  const byId = (n) => db.prepare('SELECT id, timestamp, category, tier, message, corrects, valid_from, valid_to, invalidated_by FROM logs WHERE id = ?').get(n);
+
+  const start = byId(id);
+  if (!start) {
+    console.error(`pebbl: no entry #${id}`);
+    process.exit(1);
+  }
+
+  // Walk backward to the root (the earliest belief this one descends from).
+  let root = start;
+  const seenBack = new Set([root.id]);
+  while (root.corrects != null) {
+    const prev = byId(root.corrects);
+    if (!prev || seenBack.has(prev.id)) break; // guard against cycles
+    seenBack.add(prev.id);
+    root = prev;
+  }
+
+  // Walk forward via invalidated_by, collecting the linear chain root → current.
+  const chain = [root];
+  const seenFwd = new Set([root.id]);
+  let cur = root;
+  while (cur.invalidated_by != null) {
+    const next = byId(cur.invalidated_by);
+    if (!next || seenFwd.has(next.id)) break; // guard against cycles
+    seenFwd.add(next.id);
+    chain.push(next);
+    cur = next;
+  }
+
+  console.log(`--- HISTORY: #${id} (${chain.length} link${chain.length === 1 ? '' : 's'}) ---`);
+  for (let i = 0; i < chain.length; i++) {
+    const e = chain[i];
+    const date = (e.valid_from || e.timestamp || '').slice(0, 10);
+    const status = e.valid_to == null
+      ? 'current'
+      : `superseded ${e.valid_to.slice(0, 10)} by #${e.invalidated_by}`;
+    const marker = e.id === Number(id) ? ' *' : '';
+    console.log(`  #${e.id} [${e.tier}|${e.category}] ${date} — ${e.message}  (${status})${marker}`);
+  }
+  console.log('---');
+}
+
 module.exports = function log(args) {
-  const { flags, positional } = parseArgs(args);
+  const parsed = parseArgs(args);
+  // A value-flag given without a value (e.g. `--corrects --cat decision`) must
+  // error, not silently drop — a lost --corrects leaves the contradicted entry
+  // live. Likewise --corrects/--relates must be integer entry IDs, not NULL.
+  assertCompleteFlags(parsed);
+  assertIntegerFlags(parsed, ['corrects', 'relates', 'history']);
+  const { flags, positional } = parsed;
+
+  // `pebbl log --history <id>`: read-only view of a decision's supersession
+  // chain. Branches before the message-required check below.
+  if (flags.history != null) {
+    printHistory(requirePebblDir(), parseInt(flags.history, 10));
+    return;
+  }
 
   const message = positional.join(' ').trim();
   if (!message) {
@@ -139,29 +222,169 @@ module.exports = function log(args) {
   const relatesTo = flags.relates ? parseInt(flags.relates, 10) : null;
   const corrects = flags.corrects ? parseInt(flags.corrects, 10) : null;
 
+  // Rerank signal (A): importance is tier-derived by default, NOT 0. This is the
+  // launch no-regression safety — at launch access_count is 0 everywhere, so the
+  // usage term is flat; a tier-derived importance keeps rerank ordering tier-aware
+  // so it does not regress below the live tier-then-id ordering on day one.
+  // Overridable via --importance <0..5> for a hand-graded entry. importanceForTier
+  // lives in rank.js as the single source of truth (the migration backfill reuses
+  // it) so the two cannot drift.
+  let importance = importanceForTier(tier);
+  if (flags.importance !== undefined) {
+    const parsed = Number(flags.importance);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 5) {
+      console.error(`pebbl: --importance expects a number 0..5, got "${flags.importance}"`);
+      process.exit(1);
+    }
+    importance = parsed;
+  }
+
   if (!isSession && !flags.cat && category === 'uncategorized') {
     console.error(`pebbl: no --cat given and rubric didn't match — entry stored as 'uncategorized'`);
     console.error(`       pick one: ${VALID_CATEGORIES.join(', ')}`);
+  }
+
+  const db = openDb(pebblDir);
+
+  // On --corrects, the target must still be the current belief (valid_to IS
+  // NULL) for the correction to make sense. If it is ALREADY superseded, writing
+  // a new open entry here would create a second live belief on the same chain
+  // (split-brain), because the stamp's `AND valid_to IS NULL` guard refuses to
+  // re-stamp the old target. Detect that case BEFORE inserting anything: follow
+  // the chain from the target via invalidated_by to its live head (the still-
+  // current entry, valid_to IS NULL), tell the user to correct that head
+  // instead, and exit without writing. We do not silently re-target to the head
+  // because that would change what the user asked without telling them.
+  if (corrects != null) {
+    const target = db.prepare('SELECT id, valid_to, invalidated_by FROM logs WHERE id = ?').get(corrects);
+    // A truly missing id keeps the existing not-found behavior (fall through and
+    // insert with a dangling corrects ref). Only the "exists but already
+    // superseded" case is the split-brain we must refuse.
+    if (target && target.valid_to != null) {
+      // Walk forward to the live head: the entry in this chain whose valid_to
+      // is still NULL (same "current belief" notion the reads use).
+      let head = target;
+      const seen = new Set([head.id]);
+      while (head.valid_to != null && head.invalidated_by != null) {
+        const next = db.prepare('SELECT id, valid_to, invalidated_by FROM logs WHERE id = ?').get(head.invalidated_by);
+        if (!next || seen.has(next.id)) break; // guard against cycles / broken links
+        seen.add(next.id);
+        head = next;
+      }
+      console.error(`pebbl: entry #${corrects} is already superseded by #${head.id}; did you mean --corrects ${head.id}?`);
+      process.exit(1);
+    }
   }
 
   const mdEntry = formatEntry(ts, message, category, tier, source, topics);
   const md = `## ${ts} - ${message}\n${mdEntry.comment}\n\n`;
   fs.appendFileSync(path.join(pebblDir, 'manual-logs.md'), md);
 
-  const db = openDb(pebblDir);
-  db.prepare(`
-    INSERT INTO logs (timestamp, source, category, tier, message, topics, relates_to, corrects)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(ts, source, category, tier, message, topics, relatesTo, corrects);
+  // Bi-temporal (v0.5): a new entry is the current belief, valid from now with
+  // an open valid_to. importance (v0.7) is set at log time so a fresh row is
+  // tier-weighted for rerank immediately; access_count/last_accessed keep their
+  // column defaults (0 / NULL) and only move when the entry is surfaced on a read.
+  const info = db.prepare(`
+    INSERT INTO logs (timestamp, source, category, tier, message, topics, relates_to, corrects, valid_from, valid_to, importance)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+  `).run(ts, source, category, tier, message, topics, relatesTo, corrects, ts, importance);
+  const newId = Number(info.lastInsertRowid);
 
-  qmdUpdate(pebblDir);
+  // On --corrects, stamp the TARGET's valid_to (when it stopped being true) and
+  // invalidated_by (what replaced it) instead of hiding it. The target is known
+  // current here (the already-superseded case exited above), so this stamp
+  // always lands on a live row.
+  if (corrects != null) {
+    db.prepare(
+      'UPDATE logs SET valid_to = ?, invalidated_by = ? WHERE id = ? AND valid_to IS NULL'
+    ).run(ts, newId, corrects);
+  }
+
+  // P4: qmd is OFF the synchronous write path. The 7-9s qmd reindex (~80s with
+  // embeddings) used to run inline here and block every `pebbl log`; in some
+  // environments the qmd subprocess blocks effectively forever. We now kick it
+  // as a DETACHED background job (src/qmd.js qmdUpdateDeferred) that outlives
+  // this process, so the foreground returns after only the ms-scale SQLite fold
+  // + markdown write above. BM25 search tolerates the few-seconds-stale index.
+  qmdUpdateDeferred(pebblDir);
+
+  // ADDITIVE event-sourcing path (P0 tracer). On TOP of the SQLite write +
+  // markdown projection above (which stay canonical for now), also append
+  // an `append` event to .pebbl/events.jsonl and rebuild a view from the
+  // fold. The whole append+rebuild is serialized by the per-store lock so a
+  // concurrent local write can't interleave. db.sqlite remains the source
+  // of truth; this proves the committed-text path end to end alongside it.
+  try {
+    // P5 routing: a foundation entry on a PUBLIC remote is private-by-default
+    // (lands in events.local.jsonl, gitignored) unless --share is passed. On a
+    // private/unknown remote, foundation shares freely (Q3=B). Visibility is
+    // detected from the git remote; the detection is cheap and best-effort.
+    const repoRoot = path.dirname(path.resolve(pebblDir));
+    const vis = detectRemoteVisibility((a) => {
+      try {
+        return execFileSync('git', a, { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch { return ''; }
+    });
+    const local = shouldRouteLocal({ tier, share: !!flags.share, visibility: vis.visibility });
+    if (local) {
+      console.error('pebbl: foundation entry kept PRIVATE (events.local.jsonl) — public remote, no --share. Use --share to publish.');
+    }
+    appendLogEvent(
+      pebblDir,
+      { ts, category, tier, message, topics },
+      (rows) => rebuildEventsView(pebblDir, rows),
+      { local },
+    );
+  } catch (err) {
+    // Never let the new additive path break the existing, canonical write.
+    console.error(`pebbl: events.jsonl append skipped (${err.message})`);
+  }
 
   console.log(mdEntry.out);
 };
 
+// Rebuild the folded view projection from the event log. P1 fills in the
+// rebuild seam P0 cut: write the real, disposable `view.sqlite` (the FK-
+// translated read model) from the full fold, alongside the human-readable
+// events-view.md tracer. This stays ADDITIVE — the canonical db.sqlite +
+// manual-logs.md the existing read path uses are NOT touched here (P6 cutover
+// flips openDb to view.sqlite; P1 only proves the artifact rebuilds, and the
+// byte-identity vs db.sqlite is proven by the fold-equivalence test, not by
+// clobbering the canonical files). Row shape mirrors regenerateMarkdown
+// (compact.js:143-159) for the tracer comment block.
+function rebuildEventsView(pebblDir, rows) {
+  let md = '# Events View (folded)\n\n';
+  for (const row of rows) {
+    md += `## ${row.timestamp} - ${row.message}\n`;
+    md += `<!-- eid:${row.eid} cat:${row.category} topic:${row.topics} tier:${row.tier} actor:${row.actor} -->\n\n`;
+  }
+  fs.writeFileSync(path.join(pebblDir, 'events-view.md'), md);
+
+  // Build the disposable view.sqlite from the full fold (the real read model
+  // downstream phases consume). Best-effort: never let the additive view break
+  // the canonical write — the same contract the appendLogEvent try/catch keeps.
+  try {
+    const { foldFull } = require('./events');
+    const { writeViewSqlite } = require('./view');
+    const { readEvents } = require('./events');
+    const projection = foldFull(readEvents(pebblDir));
+    writeViewSqlite(projection, path.join(pebblDir, 'view.sqlite'));
+    // P4: stamp the staleness watermark so the NEXT read sees the view as fresh
+    // (a fingerprint compare, no re-fold) instead of replaying the whole log.
+    // This runs inside the appendLogEvent lock; writeWatermark/currentState are
+    // plain I/O (they don't re-take the lock), so no re-entrancy here.
+    const { currentState, writeWatermark } = require('./staleness');
+    const state = currentState(pebblDir);
+    if (state) writeWatermark(pebblDir, state);
+  } catch (err) {
+    console.error(`pebbl: view.sqlite rebuild skipped (${err.message})`);
+  }
+}
+
 module.exports.VALID_CATEGORIES = VALID_CATEGORIES;
 module.exports.VALID_TIERS = VALID_TIERS;
 module.exports.VALID_SOURCES = VALID_SOURCES;
+module.exports.printHistory = printHistory;
 
 function displayEntry(e) {
   const date = (e.timestamp || '').slice(0, 10);
@@ -171,3 +394,4 @@ function displayEntry(e) {
 }
 
 module.exports.displayEntry = displayEntry;
+module.exports.shouldRouteLocal = shouldRouteLocal;

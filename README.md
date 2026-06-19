@@ -200,7 +200,7 @@ Handoff flags:
 - `--blocked <items>` — semicolon-separated blockers
 - `--latest` — show the most recent handoff
 - `--list` — list recent handoffs
-- `--close` — close the open handoff (promotes to foundation-tier log)
+- `--close` — close an open handoff; session detail entries become compaction-eligible; done/todo/blocked stay searchable in handoffs.md
 
 ## Getting started: for agents
 
@@ -289,7 +289,7 @@ pebbl handoff "implemented search, chose lunr.js" \
 ```bash
 pebbl context                   # shows open handoff at top
 # ... do the work ...
-pebbl handoff --close           # promotes handoff to foundation-tier log entry
+pebbl handoff --close           # session detail entries become compaction-eligible; done/todo/blocked stay searchable
 ```
 
 ## File structure

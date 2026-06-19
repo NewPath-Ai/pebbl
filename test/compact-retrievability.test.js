@@ -1,17 +1,12 @@
 'use strict';
+require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const Database = require('better-sqlite3');
-const { execSync } = require('child_process');
-const { buildGroups, unionTopics, archiveEntries } = require('../src/compact');
-const { _internal } = require('../src/search');
-const { parseArgs } = require('../src/args');
-const { qmdAvailable } = require('../src/qmd');
-const { parseQmdResults, formatResult } = _internal;
-const BIN = path.resolve(__dirname, '../bin/pebbl.js');
+const { buildGroups, unionTopics } = require('../src/compact');
 
 function db() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-compact-'));
@@ -19,7 +14,7 @@ function db() {
   d.exec(`CREATE TABLE logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'human', category TEXT NOT NULL DEFAULT 'uncategorized',
     tier TEXT NOT NULL DEFAULT 'detail', message TEXT NOT NULL, topics TEXT,
-    relates_to INTEGER, corrects INTEGER);`);
+    relates_to INTEGER, corrects INTEGER, valid_from TEXT, valid_to TEXT, invalidated_by INTEGER);`);
   return { dir, d, ins: d.prepare('INSERT INTO logs (timestamp,source,category,tier,message,topics) VALUES (?,?,?,?,?,?)') };
 }
 
@@ -57,49 +52,12 @@ describe('compact-retrievability - protect component decisions (change 1)', () =
   });
 });
 
-describe('compact-retrievability - archived stays searchable (change 3)', () => {
-  it('archiveEntries writes a qmd-indexed archive.md with tier:archived blocks', () => {
-    const { dir } = db();
-    archiveEntries(dir, [{ id: 7, timestamp: '2026-05-01T00:00:00Z', tier: 'detail', category: 'decision',
-      topics: 'auth,security', message: 'used bcrypt for hashing', source: 'agent' }], '2026-06-01T00:00:00Z');
-    const md = fs.readFileSync(path.join(dir, 'archive.md'), 'utf8');
-    assert.match(md, /## 2026-05-01T00:00:00Z - used bcrypt for hashing/);
-    assert.match(md, /tier:archived/);
-    assert.match(md, /cat:decision topic:auth,security/);
-  });
-
-  it('search parses an archive.md block as tier=archived and tags it [archived]', () => {
-    const block = ['qmd://pebbl/archive.md:3', 'Title: t', 'Score: 40%', '',
-      '## 2026-05-01T00:00:00Z - used bcrypt for hashing',
-      '<!-- cat:decision topic:auth tier:archived source:agent -->', ''].join('\n');
-    const r = parseQmdResults(block);
-    assert.equal(r.length, 1);
-    assert.equal(r[0].tier, 'archived');
-    assert.equal(formatResult(r[0]), '[archived] [decision] 2026-05-01 — used bcrypt for hashing');
-  });
-
-  it('--include-archive is a registered boolean flag (else search never reads it)', () => {
-    assert.equal(parseArgs(['query', '--include-archive']).flags['include-archive'], true);
-    // without it, the flag is undefined and the archived branch is dead
-    assert.equal(parseArgs(['query']).flags['include-archive'], undefined);
-  });
-
-  it('search hides archived by default, restores it under --include-archive', { skip: !qmdAvailable() }, () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-arch-e2e-'));
-    const sh = (c) => execSync(c, { cwd: dir, stdio: 'ignore' });
-    const out = (c) => execSync(c, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    try {
-      sh('git init -q'); sh(`node "${BIN}" init`);
-      const Database = require('better-sqlite3');
-      const d = new Database(path.join(dir, '.pebbl', 'db.sqlite'));
-      const ins = d.prepare('INSERT INTO logs (timestamp,source,category,tier,message,topics) VALUES (?,?,?,?,?,?)');
-      for (let i = 0; i < 12; i++) ins.run(`2026-05-${10 + i}`, 'human', 'pattern', 'detail', `ARCHIVEWORD note ${i}`, 'style');
-      d.close();
-      sh(`node "${BIN}" compact --execute`);   // rolls them up + writes/indexes archive.md
-      assert.doesNotMatch(out(`node "${BIN}" search ARCHIVEWORD`), /\[archived\]/);
-      assert.match(out(`node "${BIN}" search ARCHIVEWORD --include-archive`), /\[archived\]/);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
+// P3 (event-sourcing): the "archived stays searchable (change 3)" describe block
+// is DELETED. It exercised archiveEntries()/archive.md/`search --include-archive`,
+// all of which the destructive→additive flip removes — compaction no longer
+// writes archive/*.txt or archive.md; the append-only events.jsonl IS the durable
+// archive and rolled-up source entries stay in the log (their eid lives in a
+// supersede's rolls_up), so there is no separate "archived" search tier to assert
+// on. The append-only / zero-git-deletion replacement is covered in
+// test/compact-append-only.test.js. (search.js still carries a now-vestigial
+// --include-archive branch; ripping it out is search-surface cleanup, out of P3.)

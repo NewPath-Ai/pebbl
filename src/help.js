@@ -90,6 +90,20 @@ already-logged decision is not re-nudged.
 Flags:
   --n <count>    how many recent commits to scan (default 30)
 `,
+  'audit-history': `pebbl audit-history — one-time read-only scan of committed .md history
+
+Walks ALL committed .md blobs across \`git log --all\` (not just the working
+tree) and flags three leak classes that append-only memory could never
+un-leak once shared: non-RFC1918 IPs and host:port pairs, credential file
+paths (.env / .claude-env / /etc/*-bot.env), token shapes, and PII names from
+the repo's anon name-map. Emits a per-finding rotation checklist (file,
+commit, line, class, ROTATE/ACCEPT prompt).
+
+READ-ONLY: it never edits, redacts, force-pushes, or stages anything. A real
+leaked secret must be ROTATED at its source — this tool only surfaces it.
+Run it before taking any store \`--shared\`, and pair it with the pre-commit /
+pre-push gate that scans every new commit/push going forward.
+`,
   init: `pebbl init — set up .pebbl/ in current project
 
 Creates .pebbl/ with sqlite store, writes PEBBL.md at project root,
@@ -106,6 +120,12 @@ Flags:
   --source <source>    human|agent|hook (default: human)
   --relates <id>       link to a related entry ID
   --corrects <id>      supersede a prior entry (old entry stays searchable, marked corrected)
+  --share              publish a foundation entry to the SHARED (committed) log
+                       even on a public remote. Foundation entries are
+                       PRIVATE-BY-DEFAULT on a PUBLIC remote (they land in the
+                       gitignored events.local.jsonl); --share opts one into
+                       the committed events.jsonl. On a private remote
+                       foundation shares freely and --share is a no-op.
 
 ${CATEGORIES}
 
@@ -146,7 +166,11 @@ Flags:
   --source <source>    human|agent (default: agent)
   --latest             show the most recent handoff
   --list               list recent handoffs
-  --close              close the open handoff (promotes to foundation-tier log)
+  --open               list every open handoff (alias: --list-open)
+  --list-open          list every open handoff
+  --close [id]         close an open handoff (a specific id if given);
+                       session detail entries become compaction-eligible;
+                       done/todo/blocked stay searchable in handoffs.md
 
 Handoffs materialize one block per --done/--todo/--blocked item into
 handoffs.md so each item is independently searchable.
@@ -174,6 +198,16 @@ ${TIERS}
 fleeting entries are pruned; foundation entries are always kept.
 `,
 
+  rebuild: `pebbl rebuild — force a rebuild of the view from events.jsonl
+
+Re-folds the canonical .pebbl/events.jsonl into the disposable view
+(view.sqlite + the markdown projections) and refreshes the qmd index in
+the background. The view is normally kept current automatically on every
+command, so you rarely need this — reach for it after hand-editing or
+repairing events.jsonl, or to force a refresh in a script. Runs under the
+per-store lock so it can't interleave with a concurrent write.
+`,
+
   feedback: `pebbl feedback "[message]" — drop feedback when pebbl misbehaves here
 
 Flags:
@@ -195,6 +229,34 @@ Leaves .pebbl/ in place (delete it yourself if you want a clean slate).
   'log-commit': `pebbl log-commit — called by git post-commit hook
 Not meant for direct invocation.
 `,
+
+  'privacy-scan': `pebbl privacy-scan — called by the pre-commit / pre-push git hooks
+
+Scans staged (\`--staged\`) or to-be-pushed (\`--push\`) content for the three
+leak classes (non-RFC1918 IP+port, credential file paths, denylisted PII
+names) plus token shapes, and exits non-zero on a hit to refuse the
+commit/push. On \`--push\` to a PUBLIC remote it also enforces the hard gate:
+a clean full-history .md scan must pass. Not meant for direct invocation;
+\`PEBBL_SKIP_SCAN=1\` bypasses it. See also: pebbl audit-history.
+`,
+
+  'migrate-to-events': `pebbl migrate-to-events — lift db.sqlite into events.jsonl
+
+Reads the binary store once in (timestamp, id) order, mints time-seeded
+ULIDs, builds the oldInt->ULID map BEFORE remapping any reference, and
+remaps every foreign-key site (logs.relates_to, logs.corrects,
+handoffs.promoted_log_id, and per-element session_entries / session_commits)
+into append-only events — aborting the whole store if any reference dangles.
+
+DRY-RUN by default: prints the audit + plan and writes nothing. Idempotent:
+a second run on an already-migrated store is a safe no-op.
+
+Flags:
+  --apply        actually migrate: write events.jsonl and rename
+  --write        db.sqlite -> legacy-db.sqlite (rollback artifact)
+
+Without a flag, nothing on disk changes. db.sqlite is NEVER deleted.
+`,
 };
 
 const TOPLEVEL = `pebbl — local project memory
@@ -212,6 +274,7 @@ Commands:
   handoff     create a session handoff
   narrative   view or set project narrative
   compact     compact entries
+  audit-history  read-only scan of committed .md history for leaks
   feedback    record feedback about pebbl
   upgrade     update .pebbl/ to latest
   eject       remove pebbl config

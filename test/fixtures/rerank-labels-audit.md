@@ -1,0 +1,210 @@
+# Rerank label audit
+
+Fixture: `test/fixtures/rerank-corpus.json` (75 entries). NOW = 2026-06-18T12:00:00.000Z.
+
+Labels below are COMPUTED by `test/rerank-ground-truth.js`, not hand-picked.
+Oracle rule: drop superseded (valid_to set), then order current entries on the
+query topic by tier (foundation>component>detail>fleeting), then a coarse 3-way
+usage band (high>=15, med>=5, low<5 access_count), then recency. Top 5 = the label.
+
+A human should be able to scan each table and agree the top rows belong on top.
+The "excluded (superseded)" note under each query lists rows the rule dropped, so
+you can confirm a superseded row was meant to be hidden (not lost by accident).
+
+## q-auth - topic: `auth`
+
+Intent: what is our authentication model
+
+Computed expected_top_k: [1, 3, 27, 43, 36]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 1 | Auth model: short-lived JWT access token plus rotating re... | foundation | high (41) | ~6.0mo | current |
+| 2 | 3 | Refresh token rotation handled by an auth service module,... | component | high (18) | ~5.4mo | current |
+| 3 | 27 | API auth via the same JWT access token; scopes carried as... | component | med (11) | ~3.0mo | current |
+| 4 | 43 | Auth sessions list lets a user revoke a device; revocatio... | component | med (5) | ~5.9mo | current |
+| 5 | 36 | Auth: failed login attempts rate-limited to 5 per 15 minu... | detail | med (7) | ~1.9mo | current |
+
+Current but below top-5: #4 (detail, low); #5 (detail, low).
+
+## q-realtime - topic: `realtime-sync`
+
+Intent: how does realtime collaboration sync
+
+Computed expected_top_k: [6, 8, 41, 10, 42]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 6 | Realtime sync uses CRDTs (Yjs) so concurrent edits merge ... | foundation | high (55) | ~6.2mo | current |
+| 2 | 8 | Sync transport is a WebSocket relay; updates broadcast pe... | component | high (22) | ~4.9mo | current |
+| 3 | 41 | Realtime-sync: server persists Yjs updates to the storage... | detail | med (9) | ~1.2mo | current |
+| 4 | 10 | Sync reconnect uses exponential backoff capped at 10s | detail | med (6) | ~1.5mo | current |
+| 5 | 42 | BUILD BROKEN: sync server crash-loops on a malformed Yjs ... | detail | low (2) | 3d (fresh) | current [TIME-SENSITIVE] |
+
+Current but below top-5: #9 (detail, low).
+
+## q-storage - topic: `storage`
+
+Intent: where and how are board documents stored
+
+Computed expected_top_k: [12, 14, 35, 41, 15]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 12 | Board documents stored in S3 as compacted CRDT snapshots;... | foundation | high (25) | 21d | current |
+| 2 | 14 | Snapshot compaction runs inline on write once an update l... | component | med (14) | ~3.3mo | current |
+| 3 | 35 | Storage: pointer rows carry a content hash for integrity ... | detail | med (6) | 19d | current |
+| 4 | 41 | Realtime-sync: server persists Yjs updates to the storage... | detail | med (9) | ~1.2mo | current |
+| 5 | 15 | S3 snapshot keys namespaced by boardId then version; life... | detail | med (5) | ~2.0mo | current |
+
+Excluded as superseded: #11 (foundation, → superseded by #12); #13 (component, → superseded by #14).
+
+## q-rendering - topic: `rendering`
+
+Intent: how is the canvas rendered
+
+Computed expected_top_k: [17, 18, 45, 19, 20]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 17 | Canvas rendered on HTML5 canvas with a scene graph; no DO... | foundation | high (38) | ~5.7mo | current |
+| 2 | 18 | Rendering split into a static layer and a live layer; onl... | component | high (16) | ~4.3mo | current |
+| 3 | 45 | Rendering: viewport culling skips scene-graph nodes outsi... | component | med (13) | 29d | current |
+| 4 | 19 | Dirty-rect tracking limits repaint to changed bounding boxes | detail | med (7) | ~3.5mo | current |
+| 5 | 20 | BUILD BROKEN: rendering layer split landed a regression, ... | detail | low (1) | 1d (fresh) | current [TIME-SENSITIVE] |
+
+Current but below top-5: #44 (detail, low).
+
+## q-ci - topic: `ci`
+
+Intent: how does CI gate merges
+
+Computed expected_top_k: [21, 23, 20, 25, 24]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 21 | CI runs on GitHub Actions; merges to main gated on unit p... | foundation | high (33) | ~5.1mo | current |
+| 2 | 23 | e2e suite sharded into 8 parallel jobs after flake rate r... | component | med (9) | 9d | current |
+| 3 | 20 | BUILD BROKEN: rendering layer split landed a regression, ... | detail | low (1) | 1d (fresh) | current [TIME-SENSITIVE] |
+| 4 | 25 | CI red: Playwright flake on the share-dialog test, retrie... | detail | low (1) | 31d | current |
+| 5 | 24 | CI caches pnpm store keyed on lockfile hash | detail | low (3) | ~2.3mo | current |
+
+Excluded as superseded: #22 (component, → superseded by #23).
+
+## q-api - topic: `api`
+
+Intent: what is the public API shape
+
+Computed expected_top_k: [26, 3, 27, 46, 47]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 26 | Public API is REST under /v1 with cursor pagination; Grap... | foundation | high (28) | ~4.6mo | current |
+| 2 | 3 | Refresh token rotation handled by an auth service module,... | component | high (18) | ~5.4mo | current |
+| 3 | 27 | API auth via the same JWT access token; scopes carried as... | component | med (11) | ~3.0mo | current |
+| 4 | 46 | API: error envelope is {error:{code,message,requestId}} a... | detail | med (6) | ~2.5mo | current |
+| 5 | 47 | API: added an idempotency-key header on board-create POSTs | detail | low (2) | 7d | current |
+
+Current but below top-5: #28 (detail, low).
+
+## q-onboarding - topic: `onboarding`
+
+Intent: what is the onboarding flow
+
+Computed expected_top_k: [31, 34, 32]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 31 | Onboarding replaced with a single template-picker screen;... | foundation | med (13) | 17d | current |
+| 2 | 34 | Onboarding tracks completion as a per-user flag in the me... | component | med (8) | ~1.6mo | current |
+| 3 | 32 | Template picker offers 6 starter templates; selection dee... | detail | med (5) | ~2.8mo | current |
+
+Excluded as superseded: #30 (foundation, → superseded by #31).
+
+## q-architecture - topic: `architecture`
+
+Intent: how is the codebase structured
+
+Computed expected_top_k: [37, 38, 40]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 37 | Monorepo with pnpm workspaces; web client, sync server, a... | foundation | high (26) | ~5.5mo | current |
+| 2 | 38 | Shared types package is the single source of truth for bo... | component | med (10) | ~3.2mo | current |
+| 3 | 40 | Architecture: shared types published internally via works... | detail | low (3) | ~3.8mo | current |
+
+## q-billing - topic: `billing`
+
+Intent: how does billing and invoicing work
+
+Computed expected_top_k: [54, 48, 51, 50, 49]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 54 | Billing model: per-seat is rejected; we charge per active... | foundation | high (24) | ~4.1mo | current |
+| 2 | 48 | Billing is metered per active board per month; usage is a... | component | high (26) | ~5.3mo | current |
+| 3 | 51 | Invoices are generated by Stripe Billing; we mirror the i... | component | med (6) | 17d | current |
+| 4 | 50 | Failed card charges enter a 3-attempt dunning sequence ov... | component | med (7) | 24d | current |
+| 5 | 49 | Proration on mid-cycle plan changes is computed by day; d... | component | med (9) | 29d | current |
+
+Current but below top-5: #53 (component, low); #52 (component, low).
+
+## q-money - topic: `money`
+
+Intent: what is the pricing and monetization model
+
+Computed expected_top_k: [54, 48, 49]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 54 | Billing model: per-seat is rejected; we charge per active... | foundation | high (24) | ~4.1mo | current |
+| 2 | 48 | Billing is metered per active board per month; usage is a... | component | high (26) | ~5.3mo | current |
+| 3 | 49 | Proration on mid-cycle plan changes is computed by day; d... | component | med (9) | 29d | current |
+
+## q-permissions - topic: `permissions`
+
+Intent: how is access control enforced
+
+Computed expected_top_k: [61, 55, 58, 57, 56]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 61 | Authorization is enforced server-side on every mutation; ... | component | high (15) | ~3.6mo | current |
+| 2 | 55 | Permission checks resolve through a single can(user, acti... | detail | high (21) | ~5.0mo | current |
+| 3 | 58 | Org admins can list and revoke any board share within the... | detail | med (5) | 16d | current |
+| 4 | 57 | Share links carry a scoped capability token so anonymous ... | detail | med (6) | 21d | current |
+| 5 | 56 | Board roles are owner, editor, commenter, viewer; the rol... | detail | med (8) | 31d | current |
+
+Current but below top-5: #60 (detail, low); #59 (detail, low).
+
+## q-notifications - topic: `notifications`
+
+Intent: how are notifications delivered
+
+Computed expected_top_k: [62, 63, 66, 65, 64]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 62 | Notifications fan out through a single outbox table polle... | foundation | high (22) | ~4.4mo | current |
+| 2 | 63 | Delivery is email plus in-app; per-user channel preferenc... | component | high (19) | ~5.1mo | current |
+| 3 | 66 | Email sends go through SES with a per-workspace suppressi... | component | med (6) | 15d | current |
+| 4 | 65 | Mentions trigger an immediate notification that bypasses ... | component | med (7) | 27d | current |
+| 5 | 64 | Digest mode batches low-priority notifications into a dai... | component | med (9) | ~1.2mo | current |
+
+Current but below top-5: #68 (component, low); #67 (component, low).
+
+## q-export - topic: `export`
+
+Intent: how does board export and import work
+
+Computed expected_top_k: [75, 69, 72, 71, 70]
+
+| rank | id | message | tier | usage band (count) | age | state |
+| ---- | -- | ------- | ---- | ------------------ | --- | ----- |
+| 1 | 75 | Export and import share one schema-versioned format modul... | component | high (16) | ~3.6mo | current |
+| 2 | 69 | Board export serializes the CRDT document to a portable J... | detail | high (23) | ~5.0mo | current |
+| 3 | 72 | Export runs in a web worker so the main thread stays resp... | detail | med (6) | 17d | current |
+| 4 | 71 | PDF export paginates large boards by tiling the scene gra... | detail | med (7) | 29d | current |
+| 5 | 70 | PNG export rasterizes the current viewport at 2x for retina | detail | med (9) | ~1.3mo | current |
+
+Current but below top-5: #74 (detail, low); #73 (detail, low).

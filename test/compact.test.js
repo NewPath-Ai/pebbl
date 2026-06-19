@@ -1,4 +1,5 @@
 'use strict';
+require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -22,7 +23,10 @@ function setupDb(dir) {
       message    TEXT    NOT NULL,
       topics     TEXT,
       relates_to INTEGER,
-      corrects   INTEGER
+      corrects   INTEGER,
+      valid_from TEXT,
+      valid_to   TEXT,
+      invalidated_by INTEGER
     );
   `);
   return db;
@@ -38,13 +42,14 @@ describe('compact - buildGroups', () => {
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('groups entries by category/primaryTopic/month above threshold', () => {
+  it('groups entries by category/primaryTopic/quarter above threshold', () => {
     dir = tmpDir();
     db = setupDb(dir);
 
     const insert = db.prepare(
       'INSERT INTO logs (timestamp, source, category, tier, message, topics) VALUES (?, ?, ?, ?, ?, ?)'
     );
+    // May = month 5 → Q2.
     for (let i = 0; i < 5; i++) {
       insert.run('2026-05-0' + (i + 1), 'human', 'decision', 'detail', `decision ${i}`, 'auth,security');
     }
@@ -54,14 +59,14 @@ describe('compact - buildGroups', () => {
 
     const { groups } = buildGroups(db, 4);
 
-    assert(groups.has('decision/auth/2026-05'));
-    assert.strictEqual(groups.get('decision/auth/2026-05').length, 5);
-    assert(!groups.has('structure/api/2026-05'));
+    assert(groups.has('decision/auth/2026-Q2'));
+    assert.strictEqual(groups.get('decision/auth/2026-Q2').length, 5);
+    assert(!groups.has('structure/api/2026-Q2'));
   });
 
   it('filters groups below threshold', () => {
     const { groups } = buildGroups(db, 6);
-    assert(!groups.has('decision/auth/2026-05'));
+    assert(!groups.has('decision/auth/2026-Q2'));
   });
 
   it('puts uncategorized entries in ambiguous list', () => {
@@ -87,7 +92,7 @@ describe('compact - buildGroups', () => {
     assert(found);
     assert.strictEqual(found.tier, 'fleeting');
     // Fleet entries should not be in groups
-    const group = groups.get('decision/auth/2026-05');
+    const group = groups.get('decision/auth/2026-Q2');
     if (group) {
       const inGroup = group.find(e => e.tier === 'fleeting');
       assert(!inGroup);
@@ -106,33 +111,36 @@ describe('compact - buildGroups', () => {
     }
 
     const { groups } = buildGroups(db, 10);
-    assert(groups.has('pattern/general/2026-05'));
+    assert(groups.has('pattern/general/2026-Q2'));
   });
 
-  it('groups across different months separately', () => {
+  it('groups across different quarters separately', () => {
     dir = tmpDir();
     db = setupDb(dir);
 
     const insert = db.prepare(
       'INSERT INTO logs (timestamp, source, category, tier, message, topics) VALUES (?, ?, ?, ?, ?, ?)'
     );
+    // May = month 5 → Q2; August = month 8 → Q3. Same category/topic but
+    // different quarters must land in separate buckets (months within a quarter
+    // would now collapse together, so we straddle the Q2/Q3 boundary).
     for (let i = 0; i < 5; i++) {
       insert.run('2026-05-0' + (i + 1), 'human', 'data', 'detail', `may ${i}`, 'storage');
     }
     for (let i = 0; i < 5; i++) {
-      insert.run('2026-06-0' + (i + 1), 'human', 'data', 'detail', `june ${i}`, 'storage');
+      insert.run('2026-08-0' + (i + 1), 'human', 'data', 'detail', `august ${i}`, 'storage');
     }
 
     const { groups } = buildGroups(db, 5);
-    assert(groups.has('data/storage/2026-05'));
-    assert(groups.has('data/storage/2026-06'));
-    assert.strictEqual(groups.get('data/storage/2026-05').length, 5);
-    assert.strictEqual(groups.get('data/storage/2026-06').length, 5);
+    assert(groups.has('data/storage/2026-Q2'));
+    assert(groups.has('data/storage/2026-Q3'));
+    assert.strictEqual(groups.get('data/storage/2026-Q2').length, 5);
+    assert.strictEqual(groups.get('data/storage/2026-Q3').length, 5);
   });
 });
 
 describe('compact - execute helpers', () => {
-  const { buildGroups, archiveEntries, regenerateMarkdown, generateRollupMessage } = require('../src/compact');
+  const { buildGroups, regenerateMarkdown, generateRollupMessage } = require('../src/compact');
 
   let dir, db;
 
@@ -149,29 +157,25 @@ describe('compact - execute helpers', () => {
     const msg = generateRollupMessage(entries);
     assert(msg.includes('[rollup]'));
     assert(msg.includes('decision notes on auth'));
-    assert(msg.includes('2026-05'));
+    // May timestamps → Q2; rollup labels by quarter.
+    assert(msg.includes('2026-Q2'));
     assert(msg.includes('chose JWT'));
     assert(msg.includes('added refresh tokens'));
   });
 
-  it('archiveEntries creates archive file with correct format', () => {
-    dir = tmpDir();
-    fs.mkdirSync(path.join(dir, 'archive'), { recursive: true });
-
-    const entries = [
-      { id: 1, tier: 'detail', category: 'decision', topics: 'auth', message: 'chose JWT' },
-      { id: 2, tier: 'detail', category: 'decision', topics: 'auth', message: 'added refresh' },
-    ];
-    archiveEntries(dir, entries, '2026-05-23T12:00:00Z');
-
-    const archivePath = path.join(dir, 'archive', '2026-05.txt');
-    assert(fs.existsSync(archivePath));
-
-    const content = fs.readFileSync(archivePath, 'utf8');
-    assert(content.includes('=== Archived 2026-05-23T12:00:00Z ==='));
-    assert(content.includes('[id:1] [detail|decision] topics:auth'));
-    assert(content.includes('[id:2] [detail|decision] topics:auth'));
-    assert(content.includes('---'));
+  // P3 (event-sourcing): the old `archiveEntries creates archive file` test is
+  // DELETED. archiveEntries + archive/*.txt + archive.md no longer exist — the
+  // append-only events.jsonl IS the durable archive (a rolled-up source stays in
+  // the log forever; the fold hides it). The append-only / zero-deletion
+  // behavior that REPLACES it is covered end-to-end in
+  // test/compact-append-only.test.js.
+  it('compact.js no longer exports or defines archiveEntries (machinery deleted)', () => {
+    const compact = require('../src/compact');
+    assert.equal(compact.archiveEntries, undefined, 'archiveEntries must be gone from exports');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'compact.js'), 'utf8');
+    assert.doesNotMatch(src, /function archiveEntries/, 'archiveEntries function must be deleted');
+    assert.doesNotMatch(src, /db\.transaction/, 'the destructive db.transaction must be gone');
+    assert.doesNotMatch(src, /INSERT INTO logs|DELETE FROM logs|UPDATE logs/, 'no destructive SQL against logs');
   });
 
   it('regenerateMarkdown rebuilds manual-logs.md from SQLite', () => {
@@ -187,7 +191,10 @@ describe('compact - execute helpers', () => {
         message    TEXT NOT NULL,
         topics     TEXT,
         relates_to INTEGER,
-        corrects   INTEGER
+        corrects   INTEGER,
+        valid_from TEXT,
+        valid_to   TEXT,
+        invalidated_by INTEGER
       );
     `);
     db.prepare('INSERT INTO logs (timestamp, source, category, tier, message, topics) VALUES (?, ?, ?, ?, ?, ?)')

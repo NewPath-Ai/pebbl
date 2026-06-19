@@ -1,7 +1,7 @@
 'use strict';
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openDb, topicFilter } = require('./db');
+const { openDb, topicFilter, notCorrected } = require('./db');
 const { qmdAvailable, qmdQuery } = require('./qmd');
 const { displayEntry } = require('./log');
 const { ensureProjectFiles, loadConfig } = require('./rubric');
@@ -12,6 +12,23 @@ const { searchSources } = require('./sources');
 // Normalize a message for near-duplicate comparison.
 function normalize(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Split a query into lowercased whitespace-delimited terms for the SQLite
+// fallback. The fallback used to LIKE the whole query as one string, so a
+// multi-word search ("invite code") only matched docs containing that exact
+// adjacent phrase and missed almost everything. Tokenizing into AND-of-terms
+// makes each term a separate filter, recovering recall when the words are
+// scattered. An empty/blank query yields [] (callers treat that as "match all").
+function queryTerms(query) {
+  return (query || '').toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+// True when every term in `terms` appears (substring) in `text`. AND semantics,
+// matching the SQL we build below; an empty term list matches everything.
+function matchesAllTerms(text, terms) {
+  const t = (text || '').toLowerCase();
+  return terms.every(term => t.includes(term));
 }
 
 // Strip the deterministic "handoff #N field: " prefix from a materialized item.
@@ -44,7 +61,10 @@ function formatResult(r) {
 // Plain substring scan over the parsed projections; returns [] when no
 // mirrors exist so search output is unchanged until then.
 function searchMirrors(pebblDir, query, cat, topic) {
-  const q = query.toLowerCase();
+  // Same AND-of-terms recall fix as the SQLite fallback: mirror search is also
+  // a qmd-less substring scan, so a multi-word query must match on all terms
+  // rather than the exact adjacent phrase.
+  const terms = queryTerms(query);
   const topicMatch = topics => !topic ||
     (topics || '').split(',').map(t => t.trim()).includes(topic);
 
@@ -52,7 +72,7 @@ function searchMirrors(pebblDir, query, cat, topic) {
   for (const e of mirrorLogs(pebblDir)) {
     if (cat && e.cat !== cat) continue;
     if (!topicMatch(e.topics)) continue;
-    if (!e.message.toLowerCase().includes(q)) continue;
+    if (!matchesAllTerms(e.message, terms)) continue;
     results.push({
       isHandoff: false, machine: e.machine, tier: e.tier, cat: e.cat,
       topics: e.topics, date: e.date, message: e.message,
@@ -61,7 +81,7 @@ function searchMirrors(pebblDir, query, cat, topic) {
   // Handoff items carry no category — same as the local handoff paths.
   for (const h of mirrorHandoffs(pebblDir)) {
     if (!topicMatch(h.topics)) continue;
-    if (!h.message.toLowerCase().includes(q)) continue;
+    if (!matchesAllTerms(h.message, terms)) continue;
     results.push({
       isHandoff: true, machine: h.machine, handoffId: h.handoffId,
       field: h.field, status: h.status, topics: h.topics,
@@ -160,14 +180,21 @@ function parseQmdResults(raw, cat, topic) {
 
 // SQLite fallback: scan closed-handoff fields for the query and emit matching items.
 function searchHandoffsSqlite(db, query, topic) {
-  const like = `%${query}%`;
+  const terms = queryTerms(query);
+  // Row pre-filter: each term must appear in at least one handoff field. This
+  // is just to narrow the candidate rows cheaply; the authoritative per-item
+  // AND-of-terms check happens below so we don't emit an item that only matches
+  // because different terms landed in different fields.
+  const perTerm = '(summary LIKE ? OR done LIKE ? OR todo LIKE ? OR blocked LIKE ?)';
+  const where = terms.length ? terms.map(() => perTerm).join(' AND ') : '1=1';
+  const params = [];
+  for (const t of terms) { const like = `%${t}%`; params.push(like, like, like, like); }
   const rows = db.prepare(`
     SELECT id, summary, done, todo, blocked, topics, status, closed_at, timestamp
     FROM handoffs
-    WHERE summary LIKE ? OR done LIKE ? OR todo LIKE ? OR blocked LIKE ?
-  `).all(like, like, like, like);
+    WHERE ${where}
+  `).all(...params);
 
-  const q = query.toLowerCase();
   const results = [];
   for (const row of rows) {
     if (topic) {
@@ -178,7 +205,7 @@ function searchHandoffsSqlite(db, query, topic) {
     const status = row.status || 'open';
     for (const field of ['done', 'todo', 'blocked']) {
       for (const item of splitItems(row[field])) {
-        if (item.toLowerCase().includes(q)) {
+        if (matchesAllTerms(item, terms)) {
           results.push({
             isHandoff: true, handoffId: String(row.id), field, status,
             topics: row.topics, date, message: item,
@@ -186,7 +213,7 @@ function searchHandoffsSqlite(db, query, topic) {
         }
       }
     }
-    if ((row.summary || '').toLowerCase().includes(q)) {
+    if (matchesAllTerms(row.summary, terms)) {
       results.push({
         isHandoff: true, handoffId: String(row.id), field: 'summary', status,
         topics: row.topics, date, message: row.summary,
@@ -199,8 +226,20 @@ function searchHandoffsSqlite(db, query, topic) {
 function searchSqlite(pebblDir, query, cat, topic, mirrorResults, sourceResults) {
   const db = openDb(pebblDir);
 
-  let sql = "SELECT timestamp, source, category, tier, message, topics FROM logs WHERE tier != 'archived' AND message LIKE ?";
-  const params = [`%${query}%`];
+  // AND-of-terms: each whitespace-delimited term becomes its own LIKE clause,
+  // so a multi-word query matches rows containing all the words (in any order),
+  // not only rows with the exact adjacent phrase. A blank query (no terms)
+  // degrades to "1=1" so it still returns recent rows rather than nothing.
+  const terms = queryTerms(query);
+  const messageClause = terms.length
+    ? terms.map(() => 'message LIKE ?').join(' AND ')
+    : '1=1';
+  // Bi-temporal (v0.5): search surfaces the CURRENT belief only — superseded
+  // entries are excluded by the same `valid_to IS NULL` predicate the context
+  // read sites use (one definition, via notCorrected()), instead of the old
+  // hide-by-subquery. Their history stays reachable via `pebbl log --history`.
+  let sql = `SELECT timestamp, source, category, tier, message, topics FROM logs WHERE tier != 'archived' AND ${notCorrected()} AND ${messageClause}`;
+  const params = terms.map(t => `%${t}%`);
 
   if (cat) {
     sql += ' AND category = ?';
@@ -289,4 +328,4 @@ module.exports = function search(args) {
   }
 };
 
-module.exports._internal = { parseQmdResults, dedupeResults, formatResult, stripHandoffPrefix, normalize, searchHandoffsSqlite, searchMirrors, mergeMirror, searchSources, searchSqlite };
+module.exports._internal = { parseQmdResults, dedupeResults, formatResult, stripHandoffPrefix, normalize, queryTerms, matchesAllTerms, searchHandoffsSqlite, searchMirrors, mergeMirror, searchSources, searchSqlite };
