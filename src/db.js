@@ -109,3 +109,73 @@ function validAsOf() {
 
 module.exports.notCorrected = notCorrected;
 module.exports.validAsOf = validAsOf;
+
+// ── rerank usage signal: increment-on-INTENTIONAL-LOOKUP (v0.7, FIX 1) ─────────
+//
+// When the user INTENTIONALLY looks an entry up, bump its access_count and stamp
+// last_accessed=now. access_count is the runtime signal rank.js's usage term
+// reads, so the usage win accrues from real lookups rather than staying flat.
+//
+// SCOPE — only the TARGETED retrieval path calls this (FIX 1):
+//   - context.js contextTopic: `pebbl context --topic <x>`. This is the user
+//     asking "what do we know about X" and getting that topic's entries — a
+//     genuine retrieval. It calls recordAccess on exactly the ids it returned.
+//   - contextDefault (the plain `pebbl context` dump) and contextFull (`--full`,
+//     and the cat/tier/source-filtered dump that falls through to it) DELIBERATELY
+//     do NOT call this. They are broad session-start renders; counting the rows
+//     they PRINT would make access_count track print-frequency, a rich-get-richer
+//     loop that pollutes the usage signal. rerank still ORDERS those reads by
+//     current usage (that does not inflate it) — only the WRITE is gated.
+//   - contextAsOf is excluded: a bitemporal time-travel view of historical
+//     (possibly superseded) beliefs, not a current-belief lookup.
+//   - There is currently NO single-entry `show` command (the only `--show` flag is
+//     narrative's). If one is ever added it should call recordAccess (it is the
+//     archetypal intentional lookup).
+//   - search.js is a FOLLOW-UP, intentionally untouched: its SQLite path does not
+//     select id, and the qmd path carries no ids, so there is nothing to increment
+//     without a separate change. Wiring search-result increments is the next slice.
+// It must NOT fire on internal/programmatic reads (drift checks, topic-index
+// COUNT aggregates, narrative refs, compaction previews).
+//
+// last_accessed: written here (when an entry was last looked up) but NOT YET read
+// by any ranking code — recency is a TIEBREAK on `timestamp`, not on last_accessed
+// (see rank.js). It is RESERVED for a future recency-of-ACCESS signal (e.g. decay
+// usage by how long since the last lookup). Stamped now so that signal has real
+// history to work from when it lands; it is not a dead write pretending to rank.
+//
+// DETERMINISM GUARD — never increment during the test suite. node's test runner
+// sets NODE_TEST_CONTEXT in every test file process, so a guard on it keeps the
+// suite's access_count stable across runs (Gate 4) without each test opting out.
+// The CLI runs without that env var, so production lookups still count. Tests that
+// need to exercise the write path clear NODE_TEST_CONTEXT around the call (see
+// test/recordAccess.test.js) — there is no force flag.
+//
+// CONCURRENCY / PERF — a write-on-read: one lookup can issue several cheap UPDATEs.
+// Each id is a single indexed UPDATE by primary key, deduped per call so an entry
+// shown twice counts once. better-sqlite3 is synchronous; a failure here must
+// never break the read, so the whole thing is best-effort/try-caught.
+function shouldCountAccess() {
+  // The test runner sets this; absence means a real CLI invocation.
+  return !process.env.NODE_TEST_CONTEXT;
+}
+
+function recordAccess(db, ids, opts = {}) {
+  if (!shouldCountAccess()) return;
+  const unique = [...new Set((ids || []).filter(id => id != null))];
+  if (unique.length === 0) return;
+  const now = opts.now || new Date().toISOString();
+  try {
+    const stmt = db.prepare(
+      'UPDATE logs SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
+    );
+    const tx = db.transaction((rows) => {
+      for (const id of rows) stmt.run(now, id);
+    });
+    tx(unique);
+  } catch {
+    // Never let a usage-signal write break the read path it rode in on.
+  }
+}
+
+module.exports.recordAccess = recordAccess;
+module.exports.shouldCountAccess = shouldCountAccess;
