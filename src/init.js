@@ -33,10 +33,13 @@ ${AGENT_END}
 const AGENT_STANDALONE = `# Agent Guidelines\n${AGENT_SECTION}`;
 
 const HOOK_SCRIPT = `#!/bin/sh
+# pebbl-classic-safe: honor the embed bypass and never block the commit (incident 2026-06-18)
+[ -n "$PEBBL_DISABLE_EMBED" ] && exit 0
 HASH=$(git log -1 --pretty=%H)
 MESSAGE=$(git log -1 --pretty=%B)
 FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | tr '\\n' ',')
-pebbl log-commit "$HASH" "$MESSAGE" "$FILES"
+pebbl log-commit "$HASH" "$MESSAGE" "$FILES" >/dev/null 2>&1 &
+exit 0
 `;
 
 function init() {
