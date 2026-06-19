@@ -8,7 +8,7 @@ const { qmdUpdateDeferred } = require('./qmd');
 const { loadRubric, classifyEntry, ensureProjectFiles } = require('./rubric');
 const { isThinEntry } = require('./detect-thin');
 const { execFileSync } = require('child_process');
-const { appendLogEvent } = require('./events');
+const { appendLogEvent, appendCorrectLogEvent } = require('./events');
 const { detectRemoteVisibility } = require('./privacy-scan');
 const { importanceForTier } = require('./rank');
 
@@ -329,12 +329,27 @@ module.exports = function log(args) {
     if (local) {
       console.error('pebbl: foundation entry kept PRIVATE (events.local.jsonl) — public remote, no --share. Use --share to publish.');
     }
-    appendLogEvent(
-      pebblDir,
-      { ts, category, tier, message, topics },
-      (rows) => rebuildEventsView(pebblDir, rows),
-      { local },
-    );
+    // On --corrects, emit a `correct` event carrying the corrected entry's EID
+    // (resolved from the local int inside the lock — events.appendCorrectLogEvent),
+    // so the fold stamps the target's valid_to and the superseded entry hides in
+    // events/shared reads exactly as the legacy db.sqlite UPDATE above hides it.
+    // Without --corrects this stays a plain `append`. The correcting entry IS the
+    // new live belief, so it carries the same domain payload either way.
+    if (corrects != null) {
+      appendCorrectLogEvent(
+        pebblDir,
+        { ts, category, tier, message, topics, correctsLocalId: corrects },
+        (rows) => rebuildEventsView(pebblDir, rows),
+        { local },
+      );
+    } else {
+      appendLogEvent(
+        pebblDir,
+        { ts, category, tier, message, topics },
+        (rows) => rebuildEventsView(pebblDir, rows),
+        { local },
+      );
+    }
   } catch (err) {
     // Never let the new additive path break the existing, canonical write.
     console.error(`pebbl: events.jsonl append skipped (${err.message})`);
