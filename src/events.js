@@ -95,6 +95,30 @@ function makeAppendEvent(pebblDir, { ts, category, tier, message, topics, actor 
   };
 }
 
+// Build a `correct` event envelope — the new belief, carrying the EID of the
+// entry it corrects. Same domain payload as an `append` (the correcting entry
+// IS itself a live row in the fold) PLUS the `corrects:<eid>` link the fold
+// (src/fold.js, the `correct` case) reads to stamp the target's valid_to so the
+// current-belief filter hides the superseded entry — exactly what the legacy
+// db.sqlite UPDATE does. `corrects` is ALWAYS an eid on the wire (the only
+// shared identity); local ints are per-machine rebuild artifacts, so a raw int
+// must never reach here. fold.js's `correct` case reads the SAME field name, so
+// it must not drift. Envelope stays v=ENVELOPE_VERSION: a `correct` line is just
+// a new type the fold already knows; old `append` lines carry no corrects field
+// and fold unchanged (the `append` case never reads it) — backward-compatible.
+function makeCorrectEvent(pebblDir, { ts, category, tier, message, topics, corrects, actor }) {
+  return {
+    ...makeEnvelope(pebblDir, 'correct', { ts, actor }),
+    category: category || 'uncategorized',
+    tier: tier || 'detail',
+    message: message || '',
+    topics: Array.isArray(topics)
+      ? topics
+      : (topics ? String(topics).split(',').map((t) => t.trim()).filter(Boolean) : []),
+    corrects: corrects || null,
+  };
+}
+
 // Compaction event makers (P3). Each is a pure append onto the log — the
 // destructive INSERT/DELETE/UPDATE transaction in compact.js becomes a small
 // batch of these. The fold (src/fold.js) is the ONLY reader; these field names
@@ -245,6 +269,51 @@ function appendLogEvent(pebblDir, fields, rebuild, opts = {}) {
   });
 }
 
+// High-level entry for `pebbl log --corrects N`: append a `correct` event that
+// carries the corrected entry's EID, then rebuild the view inline — the whole
+// thing under the per-store lock so the eid resolution and the append can't
+// interleave with a concurrent write.
+//
+// THE TRANSLATION (design "IDs" — FK translation, the on-the-wire target MUST be
+// an eid): the caller passes `correctsLocalId`, the LOCAL integer the user typed
+// (the id they saw in events-mode `context`, which reads view.sqlite). That int
+// is a per-machine rebuild artifact; the only shared identity is the eid. So we
+// fold the CURRENT event stream (the same reducer the read side uses) to get the
+// authoritative eid->int map, invert it, and look up the eid for that int. We do
+// this INSIDE the lock and BEFORE appending, so the int resolves against exactly
+// the rows the user saw (no concurrent append can shift the mapping underneath).
+//
+// If the int does not resolve to an eid (a dangling ref, or a row that only
+// exists in legacy db.sqlite and was never an event — e.g. a not-yet-migrated
+// store), we DOWNGRADE to a plain `append`: the new belief is still logged, just
+// without the supersession link, so the additive event path never silently fails
+// or stamps the wrong target. The canonical db.sqlite UPDATE in log.js still
+// records the legacy correction regardless. Returns { event, rows }.
+function appendCorrectLogEvent(pebblDir, fields, rebuild, opts = {}) {
+  return withLock(pebblDir, () => {
+    const { correctsLocalId, ...domain } = fields;
+    // Resolve local int -> eid via the live fold map (eid is the wire identity).
+    let correctsEid = null;
+    if (correctsLocalId != null) {
+      const { eidToInt } = foldFull(readEvents(pebblDir));
+      for (const [eid, int] of eidToInt) {
+        if (int === correctsLocalId) { correctsEid = eid; break; }
+      }
+    }
+    // No eid to point at -> log the new belief as a plain append (no link),
+    // rather than emit a correct that targets nothing (which folds to a no-op
+    // stamp but muddies the wire). With an eid, emit the correct event the fold
+    // reads to stamp the target's valid_to.
+    const event = correctsEid
+      ? makeCorrectEvent(pebblDir, { ...domain, corrects: correctsEid })
+      : makeAppendEvent(pebblDir, domain);
+    appendEvent(pebblDir, event, { local: !!opts.local });
+    const rows = fold(readEvents(pebblDir));
+    if (typeof rebuild === 'function') rebuild(rows);
+    return { event, rows };
+  });
+}
+
 // Append a BATCH of pre-built events as one atomic-ish unit and rebuild once.
 // Compaction (P3) emits many supersede/resolve/expire events for one --execute
 // run; appending them under a SINGLE lock + a SINGLE fold/rebuild is the
@@ -276,6 +345,7 @@ module.exports = {
   resolveActor,
   makeEnvelope,
   makeAppendEvent,
+  makeCorrectEvent,
   makeSupersedeEvent,
   makeResolveEvent,
   makeExpireEvent,
@@ -286,4 +356,5 @@ module.exports = {
   fold,
   foldFull,
   appendLogEvent,
+  appendCorrectLogEvent,
 };

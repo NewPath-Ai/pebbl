@@ -1,7 +1,8 @@
 'use strict';
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openDb, topicFilter, notCorrected } = require('./db');
+const { openReadDb, topicFilter, notCorrected } = require('./db');
+const { storeMode } = require('./store-mode');
 const { qmdAvailable, qmdQuery } = require('./qmd');
 const { displayEntry } = require('./log');
 const { ensureProjectFiles, loadConfig } = require('./rubric');
@@ -224,7 +225,13 @@ function searchHandoffsSqlite(db, query, topic) {
 }
 
 function searchSqlite(pebblDir, query, cat, topic, mirrorResults, sourceResults) {
-  const db = openDb(pebblDir);
+  // Wire 2 — reads-from-fold: events-mode reads the folded view.sqlite (so a
+  // pulled events.jsonl is searchable), legacy reads db.sqlite unchanged. The
+  // SQLite fallback is the only search path that touches a db handle; the qmd
+  // path searches the markdown the fold ALSO regenerates, so it is already
+  // fold-aware. searchHandoffsSqlite reuses this same handle (handoffs table is
+  // in the view too), so both log and handoff hits come from the fold.
+  const db = openReadDb(pebblDir);
 
   // AND-of-terms: each whitespace-delimited term becomes its own LIKE clause,
   // so a multi-word query matches rows containing all the words (in any order),
@@ -294,6 +301,19 @@ module.exports = function search(args) {
 
   const pebblDir = requirePebblDir();
   ensureProjectFiles(pebblDir);
+
+  // Wire 2 — reads-from-fold for BOTH search paths. The qmd path below searches
+  // the MARKDOWN files (manual-logs.md / handoffs.md), which the fold also
+  // regenerates from events.jsonl; but unlike the sqlite path it never opens a
+  // db handle, so openDb's lazy fold never runs for it. Trigger the fold here in
+  // events-mode so a just-pulled/merged events.jsonl is materialized into BOTH
+  // the markdown (for qmd) AND view.sqlite (for the sqlite fallback) before
+  // either reads. Cheap when already fresh (a fingerprint compare, no fold) and
+  // best-effort — a fold failure must never break search (db.sqlite/markdown are
+  // still there as the canonical read).
+  if (storeMode(pebblDir) === 'events') {
+    try { require('./staleness').ensureFresh(pebblDir); } catch { /* never break search */ }
+  }
 
   const mirrorResults = searchMirrors(pebblDir, query, flags.cat, flags.topic);
   // Read-only [source] discovery hits, ranked BELOW curated entries (appended last).

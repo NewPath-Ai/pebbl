@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openDb, topicFilter, validAsOf, notCorrected, recordAccess } = require('./db');
+const { openDb, openReadDb, topicFilter, validAsOf, notCorrected, recordAccess } = require('./db');
+const { storeMode } = require('./store-mode');
 const { rankCandidates } = require('./rank');
 const { buildGroups } = require('./compact');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
@@ -13,6 +14,29 @@ const { readNarrative, readRefs, readUpdatedTimestamp, updateRefs } = require('.
 const { mirrorMachines, mirrorLogs, mirrorHandoffs, stripHandoffPrefix } = require('./mirror');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// Record the usage signal against the CANONICAL db.sqlite. The read handle may
+// be the readonly view.sqlite (events-mode reads-from-fold), which can't take
+// the write — and the view is rebuilt from events on every fold, so a write
+// there would be lost anyway. So: in events-mode open db.sqlite just for this
+// increment and close it; in legacy mode reuse the read handle (it already IS
+// db.sqlite). Best-effort: recordAccess is itself try-caught + a no-op under the
+// test guard, and we never let a usage write break the read it rode in on.
+function recordAccessCanonical(pebblDir, readDb, ids) {
+  if (storeMode(pebblDir) === 'events') {
+    let wdb;
+    try {
+      wdb = openDb(pebblDir);
+      recordAccess(wdb, ids);
+    } catch {
+      // never let the usage signal break the read
+    } finally {
+      if (wdb) { try { wdb.close(); } catch { /* ignore */ } }
+    }
+  } else {
+    recordAccess(readDb, ids);
+  }
+}
 
 function findRelatedCommits(cwd, message) {
   try {
@@ -502,7 +526,17 @@ function contextTopic(pebblDir, db, topic, flags) {
   // access_count mean "how often this entry was deliberately looked up" rather
   // than "how often it was printed in a dump". Guarded (no-op under the test
   // suite via NODE_TEST_CONTEXT) and deduped inside recordAccess.
-  recordAccess(db, allRows.map(r => r.id));
+  //
+  // The usage signal is per-machine and lives in the CANONICAL db.sqlite. In
+  // events-mode the read `db` above is the READONLY view.sqlite (reads-from-
+  // fold), so we open the canonical store JUST for this write; in legacy mode
+  // `db` already IS db.sqlite, so reuse it (one fewer open). The view's row ids
+  // are the fold's local ints, the SAME ints db.sqlite carries for the same
+  // entries — db.sqlite is itself folded from the same events on every write
+  // (log.js appendLogEvent), one eid->int map — so an id gathered off the view
+  // updates the right db.sqlite row. recordAccess is best-effort + try-caught,
+  // so even a stale/missing target can never break the read.
+  recordAccessCanonical(pebblDir, db, allRows.map(r => r.id));
 
   showCompactionNotifications(db, pebblDir);
 }
@@ -556,7 +590,13 @@ module.exports = function context(args) {
   const { flags } = parseArgs(args);
   const pebblDir = requirePebblDir();
   ensureProjectFiles(pebblDir);
-  const db = openDb(pebblDir);
+  // Wire 2 — reads-from-fold: in an events-mode store this opens the folded
+  // view.sqlite (so a pulled/merged events.jsonl is what gets read); in a legacy
+  // store it is exactly openDb(db.sqlite). All the contextDefault/Full/Topic/
+  // AsOf queries run unchanged against whichever handle this returns — the view
+  // carries the same schema + read contract (current-belief filter, rerank
+  // columns) as the migrated db.
+  const db = openReadDb(pebblDir);
 
   // Check raw args for --full since it is not in KNOWN_FLAGS
   const isFull = args.includes('--full');
