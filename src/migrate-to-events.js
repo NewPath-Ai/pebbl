@@ -42,6 +42,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const Database = require('better-sqlite3');
 
 const { requirePebblDir } = require('./find-pebbl');
@@ -59,6 +60,10 @@ const LEGACY_DB = 'legacy-db.sqlite';
 // it is NOT a completed migration. The migration writes a fresh CANONICAL log;
 // we move the tracer aside to this .bak so it isn't double-counted.
 const TRACER_BAK = 'events.tracer.bak.jsonl';
+// When `--repair` alters or drops any FK ref, we write a MANIFEST naming exactly
+// what was repaired/dropped (handoff/log id + hash) so the relaxation from strict
+// is auditable and never silent. Mandatory whenever anything is repaired/dropped.
+const REPAIR_MANIFEST = 'repair-manifest.json';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -66,6 +71,13 @@ const TRACER_BAK = 'events.tracer.bak.jsonl';
 // both spellings the contract named (`--apply` / `--write`).
 function wantsApply(args) {
   return args.includes('--apply') || args.includes('--write');
+}
+
+// The relaxed mode: handle dangling FK refs deterministically (git-recover a
+// commit, else drop the single ref) instead of aborting the whole store. STRICT
+// abort stays the DEFAULT — this is opt-in only.
+function wantsRepair(args) {
+  return args.includes('--repair');
 }
 
 // Parse a JSON array column (session_entries / session_commits / docs). Stored
@@ -179,6 +191,187 @@ function auditForeignKeys(snapshot) {
   }
 
   return report;
+}
+
+// ── --repair: handle dangling FK refs deterministically (opt-in) ──────────────
+
+// Try to RECOVER an orphaned commit hash by re-scanning git: if the object is
+// still reachable in the repo we read its real metadata and backfill a minimal
+// `commits` row (same shape readSnapshot produces: id/timestamp/hash/message/
+// files). Returns the row on success, or null if the hash is unrecoverable
+// (object gone, not a git repo, git unavailable) so the caller falls to drop.
+//
+// `nextId` keeps the synthetic id space disjoint from the real commits table so
+// the recovered row can't collide with a surviving row's id (id is only used to
+// break mint-order ties; the eid is keyed on the hash, which is the FK).
+function recoverCommitFromGit(repoRoot, hash, nextId) {
+  let out;
+  try {
+    // %H full hash, %cI committer ISO-8601 date, %s subject. --no-walk so we
+    // read exactly this object, not its history. A bad/unreachable hash exits
+    // non-zero -> caught -> null (unrecoverable).
+    out = execFileSync(
+      'git',
+      ['log', '-1', '--no-walk', '--format=%H%x09%cI%x09%s', hash],
+      { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim();
+  } catch {
+    return null; // unreachable object, or not a git repo / no git
+  }
+  if (!out) return null;
+  const tab = out.indexOf('\t');
+  const tab2 = out.indexOf('\t', tab + 1);
+  if (tab < 0 || tab2 < 0) return null;
+  const fullHash = out.slice(0, tab);
+  const ts = out.slice(tab + 1, tab2);
+  const subject = out.slice(tab2 + 1);
+  // best-effort file list; absence must not fail the recovery.
+  let files = '';
+  try {
+    files = execFileSync(
+      'git',
+      ['show', '--name-only', '--format=', hash],
+      { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim().split('\n').filter(Boolean).join(',');
+  } catch { /* leave files empty */ }
+  // Key the recovered row on the ORIGINAL stored hash so the existing per-element
+  // session_commits remap (which looks up by the stored hash) resolves. We keep
+  // the full hash around in the manifest for the human auditing the repair.
+  return { row: { id: nextId, timestamp: ts, hash, message: subject, files }, fullHash };
+}
+
+// MUTATE the snapshot so the build pass sees a clean graph: git-recover orphaned
+// commit hashes (backfill a commits row), and for every other dangling FK site
+// drop/NULL the single offending ref. Returns a MANIFEST of every change. The
+// snapshot's logs/commits/handoffs arrays are edited IN PLACE so buildIdMaps /
+// buildEvents downstream operate on the repaired graph and never re-throw.
+//
+// Policy per FK site (every site auditForeignKeys covers):
+//   logs.relates_to        dangling -> NULL the back-link (drop the relation)
+//   logs.corrects          dangling -> NULL it (row becomes a plain append, not
+//                          a correct — no invented link)
+//   handoffs.promoted_log_id dangling -> NULL it
+//   handoffs.session_entries[] dangling -> drop the element
+//   handoffs.session_commits[] orphan hash -> RECOVER from git (backfill a
+//                          commit row) else DROP the element
+function repairForeignKeys(snapshot, repoRoot) {
+  const { logs, commits, handoffs } = snapshot;
+
+  const logIds = new Set(logs.map((r) => r.id));
+  const commitHashes = new Set(commits.map((c) => c.hash));
+  // Next synthetic id for any commit row we recover, disjoint from real ids.
+  let nextCommitId = commits.reduce((m, c) => Math.max(m, c.id || 0), 0) + 1;
+
+  const manifest = {
+    recovered_commits: [], // { handoff, hash, fullHash }
+    dropped_commits: [],   // { handoff, hash }   (unrecoverable -> element dropped)
+    dropped_session_entries: [], // { handoff, logId }
+    dropped_relates_to: [], // { logId, target }
+    dropped_corrects: [],   // { logId, target }
+    dropped_promoted_log_id: [], // { handoff, target }
+  };
+
+  // logs.relates_to / logs.corrects — NULL a dangling back-link.
+  for (const row of logs) {
+    if (row.relates_to != null && !logIds.has(row.relates_to)) {
+      manifest.dropped_relates_to.push({ logId: row.id, target: row.relates_to });
+      row.relates_to = null;
+    }
+    if (row.corrects != null && !logIds.has(row.corrects)) {
+      manifest.dropped_corrects.push({ logId: row.id, target: row.corrects });
+      row.corrects = null;
+    }
+  }
+
+  for (const h of handoffs) {
+    // handoffs.promoted_log_id — NULL a dangling promotion link.
+    if (h.promoted_log_id != null && !logIds.has(h.promoted_log_id)) {
+      manifest.dropped_promoted_log_id.push({ handoff: h.id, target: h.promoted_log_id });
+      h.promoted_log_id = null;
+    }
+
+    // handoffs.session_entries[] — drop each dangling log-id element. These are
+    // logs.id ints; a dangling one points at a row that no longer exists, so the
+    // back-link is dropped (the surviving entries are untouched).
+    const entries = parseJsonArray(h.session_entries, 'session_entries', h.id);
+    const keptEntries = [];
+    for (const e of entries) {
+      if (logIds.has(e)) { keptEntries.push(e); continue; }
+      manifest.dropped_session_entries.push({ handoff: h.id, logId: e });
+    }
+    if (keptEntries.length !== entries.length) {
+      h.session_entries = JSON.stringify(keptEntries);
+    }
+
+    // handoffs.session_commits[] — recover orphan hashes from git, else drop.
+    const shCommits = parseJsonArray(h.session_commits, 'session_commits', h.id);
+    const keptCommits = [];
+    let mutatedCommits = false;
+    for (const c of shCommits) {
+      if (commitHashes.has(c)) { keptCommits.push(c); continue; }
+      const recovered = recoverCommitFromGit(repoRoot, c, nextCommitId);
+      if (recovered) {
+        nextCommitId += 1;
+        commits.push(recovered.row);
+        commitHashes.add(c);
+        keptCommits.push(c);
+        manifest.recovered_commits.push({ handoff: h.id, hash: c, fullHash: recovered.fullHash });
+      } else {
+        // unrecoverable convenience back-link -> drop the single element.
+        manifest.dropped_commits.push({ handoff: h.id, hash: c });
+        mutatedCommits = true;
+      }
+    }
+    if (mutatedCommits) h.session_commits = JSON.stringify(keptCommits);
+  }
+
+  // Keep the recovered commits in deterministic (timestamp, id) order so the
+  // build pass mints eids in the same order it would for a clean store.
+  commits.sort((a, b) => {
+    const at = a.timestamp || '';
+    const bt = b.timestamp || '';
+    if (at !== bt) return at < bt ? -1 : 1;
+    return (a.id || 0) - (b.id || 0);
+  });
+
+  return manifest;
+}
+
+// True iff the manifest recorded at least one repaired/dropped ref. When it did,
+// writing the manifest file is MANDATORY and we warn LOUDLY on stderr.
+function manifestHasChanges(m) {
+  return (
+    m.recovered_commits.length +
+    m.dropped_commits.length +
+    m.dropped_session_entries.length +
+    m.dropped_relates_to.length +
+    m.dropped_corrects.length +
+    m.dropped_promoted_log_id.length
+  ) > 0;
+}
+
+// Emit the LOUD warning to stderr summarizing every repaired/dropped ref.
+function warnRepairs(m) {
+  console.error('pebbl migrate-to-events: --repair ALTERED the store to clear dangling FK refs:');
+  for (const r of m.recovered_commits) {
+    console.error(`  RECOVERED commit ${r.hash} (handoffs#${r.handoff}.session_commits[]) from git -> backfilled a commits row`);
+  }
+  for (const r of m.dropped_commits) {
+    console.error(`  DROPPED dangling commit ${r.hash} from handoffs#${r.handoff}.session_commits[] (unrecoverable convenience back-link)`);
+  }
+  for (const r of m.dropped_session_entries) {
+    console.error(`  DROPPED dangling log #${r.logId} from handoffs#${r.handoff}.session_entries[] (no surviving entry)`);
+  }
+  for (const r of m.dropped_relates_to) {
+    console.error(`  CLEARED dangling logs#${r.logId}.relates_to -> ${r.target} (no surviving target)`);
+  }
+  for (const r of m.dropped_corrects) {
+    console.error(`  CLEARED dangling logs#${r.logId}.corrects -> ${r.target} (row migrates as a plain append)`);
+  }
+  for (const r of m.dropped_promoted_log_id) {
+    console.error(`  CLEARED dangling handoffs#${r.handoff}.promoted_log_id -> ${r.target} (no surviving target)`);
+  }
+  console.error(`  A manifest of every change was written to ${REPAIR_MANIFEST}.`);
 }
 
 // ── map-first pass: oldInt/hash -> ULID, all minted before any remap ──────────
@@ -387,9 +580,11 @@ function renderPlan(report, eventCount, apply) {
 
 module.exports = function migrateToEvents(args = []) {
   const apply = wantsApply(args);
+  const repair = wantsRepair(args);
   const pebblDir = requirePebblDir();
 
-  // Idempotency: an already-migrated store is a safe no-op in BOTH modes.
+  // Idempotency: an already-migrated store is a safe no-op in BOTH modes (and a
+  // second `--repair` run hits this same gate — nothing to repair, no-op).
   if (alreadyMigrated(pebblDir)) {
     console.log('pebbl migrate-to-events: store already migrated (events.jsonl / legacy-db.sqlite present) — no-op.');
     return;
@@ -400,16 +595,28 @@ module.exports = function migrateToEvents(args = []) {
     console.error('pebbl migrate-to-events: no db.sqlite to migrate.');
     process.exit(1);
   }
+  // git-recovery needs the repo root (the parent of .pebbl).
+  const repoRoot = path.dirname(path.resolve(pebblDir));
 
   // One read-only snapshot drives BOTH the audit and the build.
   const db = new Database(dbPath, { readonly: true });
   let snapshot;
   let report;
   let events;
+  let manifest = null;
   try {
     snapshot = readSnapshot(db);
-    // Audit first — abort the whole store on ANY dangling reference, BEFORE any
-    // event is built or written (no partial events.jsonl).
+    if (repair) {
+      // OPT-IN relaxation: deterministically clear dangling FK refs (git-recover
+      // a commit, else drop the single ref) so the build pass sees a clean graph.
+      // Mutates the snapshot in place and returns a manifest of every change. The
+      // strict auditForeignKeys below then runs on the REPAIRED graph as a safety
+      // net — if anything was missed it still aborts whole (no partial log).
+      manifest = repairForeignKeys(snapshot, repoRoot);
+    }
+    // Audit — abort the whole store on ANY dangling reference, BEFORE any event
+    // is built or written (no partial events.jsonl). STRICT is the DEFAULT; in
+    // --repair this runs on the already-repaired snapshot and should pass clean.
     report = auditForeignKeys(snapshot);
     const maps = buildIdMaps(snapshot);            // map-first, all eids minted
     const actor = resolveActor(pebblDir);
@@ -418,6 +625,9 @@ module.exports = function migrateToEvents(args = []) {
     db.close();
     if (err instanceof MigrationAbort) {
       console.error(`pebbl migrate-to-events: ABORT — ${err.message}`);
+      if (!repair) {
+        console.error('Re-run with --repair to git-recover or drop dangling refs (writes a manifest).');
+      }
       console.error('No events.jsonl written; db.sqlite untouched.');
       process.exit(1);
     }
@@ -425,7 +635,15 @@ module.exports = function migrateToEvents(args = []) {
   }
   db.close();
 
+  const repaired = manifest && manifestHasChanges(manifest);
+
   if (!apply) {
+    // Dry-run still SHOWS what --repair would change (loud), but writes nothing —
+    // no manifest, no events. The actual manifest is written only on --apply.
+    if (repaired) {
+      warnRepairs(manifest);
+      console.error('(dry-run: nothing written; re-run with --apply --repair to migrate.)');
+    }
     console.log(renderPlan(report, events.length, false));
     return;
   }
@@ -464,19 +682,37 @@ module.exports = function migrateToEvents(args = []) {
       path.join(pebblDir, EVENTS_CANONICAL_MARKER),
       'events.jsonl is the canonical store (written by migrate-to-events --apply)\n'
     );
+    // MANDATORY whenever --repair altered/dropped anything: write the manifest so
+    // the relaxation from strict is auditable. Written atomically with the
+    // rename+marker under the same lock so a migrated store always carries the
+    // record of what was repaired.
+    if (repaired) {
+      fs.writeFileSync(
+        path.join(pebblDir, REPAIR_MANIFEST),
+        JSON.stringify(
+          { migrated_at: new Date().toISOString(), mode: 'repair', ...manifest },
+          null, 2
+        ) + '\n'
+      );
+    }
   });
 
+  if (repaired) warnRepairs(manifest);
   console.log(renderPlan(report, events.length, true));
   console.log('');
   console.log(`Wrote ${events.length} events to events.jsonl; db.sqlite -> ${LEGACY_DB}.`);
   if (movedTracer) console.log(`Preserved the P0 tracer log as ${TRACER_BAK}.`);
+  if (repaired) console.log(`Wrote a repair manifest to ${REPAIR_MANIFEST}.`);
 };
 
 // Exported for tests (pure pieces, no I/O): the audit, the map builder, the
 // event builder, and the abort type.
 module.exports.auditForeignKeys = auditForeignKeys;
+module.exports.repairForeignKeys = repairForeignKeys;
+module.exports.recoverCommitFromGit = recoverCommitFromGit;
 module.exports.buildIdMaps = buildIdMaps;
 module.exports.buildEvents = buildEvents;
 module.exports.readSnapshot = readSnapshot;
 module.exports.MigrationAbort = MigrationAbort;
 module.exports.LEGACY_DB = LEGACY_DB;
+module.exports.REPAIR_MANIFEST = REPAIR_MANIFEST;
