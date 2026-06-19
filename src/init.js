@@ -1,9 +1,11 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { openDb } = require('./db');
 const { qmdAvailable, qmdCollectionCreate } = require('./qmd');
 const { DEFAULT_RUBRIC, DEFAULT_CONFIG } = require('./rubric');
+const { detectRemoteVisibility } = require('./privacy-scan');
 
 const AGENT_BEGIN = '<!-- pebbl:begin -->';
 const AGENT_END = '<!-- pebbl:end -->';
@@ -139,9 +141,105 @@ exit 0
 `;
 }
 
-function init() {
+// Wire 1 — the public-remote hard gate for `--shared`. Committing events.jsonl
+// to a PUBLIC remote is irreversible (append-only memory can never un-leak), so
+// --shared on a public remote REFUSES unless the operator BOTH passes
+// --allow-public-memory AND the committed .md history is already clean. This
+// reuses the SAME machinery the pre-push gate uses (privacy-scan's
+// detectRemoteVisibility + fullHistoryMdHits, which wraps audit-history's blob
+// walk), so "clean" means exactly the same thing at init, at push, and in
+// `pebbl audit-history`. Returns { ok, reason }: ok=false means refuse.
+//   - remote NOT positively public (private / unknown / none) -> allow (the repo
+//     is the trust boundary, same default as foundation routing). The pre-push
+//     gate stays the backstop if a private remote is later flipped public.
+//   - public + no --allow-public-memory -> refuse (force an explicit choice).
+//   - public + --allow-public-memory + DIRTY history -> refuse (audit first).
+//   - public + --allow-public-memory + CLEAN history -> allow.
+function checkSharedPublicGate(cwd, allowPublic) {
+  const execGit = (a) => {
+    try {
+      return execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      return '';
+    }
+  };
+  const vis = detectRemoteVisibility(execGit);
+  if (vis.visibility !== 'public') {
+    return { ok: true, reason: `remote ${vis.visibility} (${vis.reason})` };
+  }
+  // PUBLIC remote from here down.
+  if (!allowPublic) {
+    return {
+      ok: false,
+      reason:
+        `the git remote is PUBLIC (${vis.reason}). Committing events.jsonl there is irreversible — ` +
+        'shared memory can never be un-leaked. Re-run with --allow-public-memory once you have ' +
+        'reviewed `pebbl audit-history` and accept that every entry becomes public.',
+    };
+  }
+  // --allow-public-memory given: still require a CLEAN committed .md history
+  // (the same full-history scan the pre-push hard gate runs). Best-effort — a
+  // git/tooling failure yields no hits (fail-open here, the pre-push gate is the
+  // hard backstop on the actual push).
+  const hits = fullHistoryMdHits(cwd);
+  if (hits.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `the committed .md history is NOT clean (${hits.length} potential leak${hits.length === 1 ? '' : 's'}). ` +
+        'Run `pebbl audit-history`, rotate/resolve every finding, then re-run `pebbl init --shared --allow-public-memory`.',
+    };
+  }
+  return { ok: true, reason: 'public remote, --allow-public-memory, audit-history clean' };
+}
+
+// Full-history *.md hit list for the gate. Reuses audit-history's blob walk +
+// the shared detector (one definition of "clean" — same as the pre-push gate's
+// fullHistoryMdHits). Returns hits[]; any tooling failure yields [].
+function fullHistoryMdHits(repoRoot) {
+  try {
+    const { _internal } = require('./audit-history');
+    const { scan, loadDenylist } = require('./privacy-scan');
+    const pebblDir = path.join(repoRoot, '.pebbl');
+    const opts = { repoRoot, pebblDir };
+    const pairs = _internal.collectMdBlobs(repoRoot);
+    const denylist = loadDenylist(opts);
+    const findings = [];
+    for (const { commit, path: p } of pairs) {
+      const text = _internal.showBlob(repoRoot, commit, p);
+      if (!text) continue;
+      const hits = scan(text, { ...opts, _denylist: denylist });
+      for (const h of hits) findings.push({ ...h, file: p, commit });
+    }
+    return findings;
+  } catch {
+    return [];
+  }
+}
+
+function init(argv) {
+  const args = Array.isArray(argv) ? argv : [];
+  // Opt-in shared mode. `--shared` relaxes the gitignore to commit events.jsonl;
+  // `--allow-public-memory` acknowledges that on a PUBLIC remote that commit is
+  // irreversible (see checkSharedPublicGate). Plain `pebbl init` (no flag) keeps
+  // the DEFAULT=LOCAL behavior — events.jsonl stays gitignored, byte-for-byte as
+  // before. Parsed up front so the public gate can refuse BEFORE any file write.
+  const shared = args.includes('--shared');
+  const allowPublic = args.includes('--allow-public-memory');
+
   const cwd = process.cwd();
   const pebblDir = path.join(cwd, '.pebbl');
+
+  // Wire 1 gate: refuse a --shared init on a public remote unless explicitly
+  // allowed AND history is clean. Runs before ANY filesystem change so a refused
+  // init leaves the tree untouched (no half-created store, no stray gitignore).
+  if (shared) {
+    const gate = checkSharedPublicGate(cwd, allowPublic);
+    if (!gate.ok) {
+      console.error(`pebbl init --shared refused: ${gate.reason}`);
+      process.exit(1);
+    }
+  }
 
   if (fs.existsSync(pebblDir)) {
     console.log('.pebbl/ already exists — skipping directory creation.');
@@ -210,15 +308,9 @@ function init() {
   }
 
   // .gitignore
-  // Two lines, both ADDITIVE and idempotent:
-  //  - `.pebbl/`              today's default: the whole store is local (the
-  //                           DEFAULT=LOCAL behavior). db.sqlite/view.sqlite are
-  //                           always disposable and never committed.
-  //  - `.pebbl/events.local.jsonl`  P5: the PRIVATE half of the two-file split.
-  //                           This file is ALWAYS gitignored, even once a store
-  //                           goes --shared (when the `.pebbl/` blanket ignore is
-  //                           relaxed for events.jsonl, this explicit line keeps
-  //                           the local/private events out of git transport).
+  // Each line is ADDITIVE and idempotent (ensureIgnoreLine only appends a line
+  // that isn't already present, so re-init never duplicates and switching a
+  // store LOCAL->shared just adds the negation/disposable lines on top).
   const gitignore = path.join(cwd, '.gitignore');
   const ensureIgnoreLine = (line, label) => {
     if (fs.existsSync(gitignore)) {
@@ -233,8 +325,63 @@ function init() {
       console.log(`Created .gitignore with ${label}`);
     }
   };
-  ensureIgnoreLine('.pebbl/', '.pebbl/');
-  ensureIgnoreLine('.pebbl/events.local.jsonl', '.pebbl/events.local.jsonl (private events)');
+
+  if (shared) {
+    // SHARED store (opt-in via --shared): COMMIT events.jsonl so a teammate /
+    // another machine that pulls it sees the merged learnings. Everything else
+    // under .pebbl/ stays disposable + machine-private.
+    //
+    // WHY NOT the blanket `.pebbl/` + a `!.pebbl/events.jsonl` negation: git
+    // does NOT descend into a directory excluded by a blanket dir-ignore, so a
+    // negation under `.pebbl/` would be inert (events.jsonl would STAY ignored).
+    // So shared mode ignores the disposable files EXPLICITLY by name instead of
+    // blanket-ignoring the dir, which leaves events.jsonl tracked by default:
+    //   - events.local.jsonl : the PRIVATE half of the two-file split — NEVER
+    //                          committed, even shared (the fold unions it in
+    //                          locally; git only ever carries events.jsonl).
+    //   - view.sqlite        : the disposable fold projection (rebuilt on read).
+    //   - db.sqlite          : the local canonical index (binary, unmergeable).
+    //   - the derived MARKDOWN (manual-logs.md / handoffs.md / commit-log.md /
+    //     narrative.md / events-view.md): these are a RENDERING of the fold, not
+    //     a source of truth — `view.js rebuildView` regenerates them byte-
+    //     identically from events.jsonl on the next read. They are DELIBERATELY
+    //     local: committing them would mean two derived artifacts to merge, and
+    //     plain markdown has no union driver, so a concurrent edit conflicts (the
+    //     reason events.jsonl is the ONLY committed truth). The forward
+    //     pre-commit scan still catches a secret because it scans the staged
+    //     events.jsonl lines, and audit-history scans committed history; a fresh
+    //     shared store commits only events.jsonl, so the source of truth is the
+    //     one scanned thing.
+    //   - qmd / lock / sentinels : machine-local index + concurrency artifacts.
+    // Order: the negation `!.pebbl/events.jsonl` re-includes it even if a
+    // pre-existing blanket `.pebbl/` line is already in the file (LOCAL->shared
+    // upgrade), so it goes LAST.
+    ensureIgnoreLine('.pebbl/events.local.jsonl', '.pebbl/events.local.jsonl (private events)');
+    ensureIgnoreLine('.pebbl/view.sqlite', '.pebbl/view.sqlite (disposable fold view)');
+    ensureIgnoreLine('.pebbl/db.sqlite', '.pebbl/db.sqlite (local index)');
+    ensureIgnoreLine('.pebbl/manual-logs.md', '.pebbl/manual-logs.md (derived from the fold)');
+    ensureIgnoreLine('.pebbl/handoffs.md', '.pebbl/handoffs.md (derived from the fold)');
+    ensureIgnoreLine('.pebbl/commit-log.md', '.pebbl/commit-log.md (derived from the fold)');
+    ensureIgnoreLine('.pebbl/narrative.md', '.pebbl/narrative.md (derived from the fold)');
+    ensureIgnoreLine('.pebbl/events-view.md', '.pebbl/events-view.md (derived tracer)');
+    ensureIgnoreLine('.pebbl/*.lock', '.pebbl/*.lock (local locks)');
+    ensureIgnoreLine('.pebbl/.qmd-update.lock', '.pebbl/.qmd-update.lock (local lock)');
+    ensureIgnoreLine('.pebbl/.rebuild-needed', '.pebbl/.rebuild-needed (local sentinel)');
+    ensureIgnoreLine('.pebbl/qmd/', '.pebbl/qmd/ (local semantic index)');
+    ensureIgnoreLine('!.pebbl/events.jsonl', '.pebbl/events.jsonl (SHARED — committed)');
+    console.log('Shared mode: events.jsonl is the COMMITTED source of truth; the SQLite indexes');
+    console.log('and the derived markdown stay local (rebuilt from the fold on the next read).');
+  } else {
+    // DEFAULT = LOCAL (no flag): the whole store is machine-private. Two lines,
+    // byte-for-byte the pre-shared-mode behavior:
+    //  - `.pebbl/`                   blanket-ignore the store (events.jsonl never
+    //                                committed; db.sqlite/view.sqlite disposable).
+    //  - `.pebbl/events.local.jsonl` belt-and-suspenders for the private half, so
+    //                                the line is present if a store later goes
+    //                                --shared and the blanket `.pebbl/` is dropped.
+    ensureIgnoreLine('.pebbl/', '.pebbl/');
+    ensureIgnoreLine('.pebbl/events.local.jsonl', '.pebbl/events.local.jsonl (private events)');
+  }
 
   // .gitattributes — install the union merge driver for events.jsonl.
   // MANDATORY for clean multi-contributor merge: without `merge=union`,

@@ -1,7 +1,9 @@
 'use strict';
+const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { migrate } = require('./migrate');
+const { storeMode } = require('./store-mode');
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS logs (
@@ -77,7 +79,63 @@ function openDb(pebblDir) {
   return db;
 }
 
-module.exports = { openDb };
+// Wire 2 — reads-from-fold. THE read-path entry point for the curated views
+// (context.js / search.js). It picks WHERE a read is served FROM:
+//
+//   events-mode (events.jsonl present, storeMode()==='events')
+//     -> serve from the FOLDED view.sqlite. This is the whole point of shared
+//        memory: a teammate who pulls only the committed events.jsonl (db.sqlite
+//        is gitignored, so they don't get yours) must still SEE the merged
+//        learnings. ensureFresh() folds events.jsonl -> view.sqlite first (the
+//        same lazy fold openDb already runs), so a just-merged events.jsonl is
+//        materialized before we open the view. The view is opened READONLY: it's
+//        a derived projection, never written through this handle.
+//
+//   legacy-mode (no events.jsonl) -> db.sqlite, byte-for-byte the old read path
+//     (this just delegates to openDb, so legacy behavior is UNCHANGED — the
+//     Acceptance #5 coexistence guarantee).
+//
+// FALLBACK: if anything about the view is unusable (fold skipped because this
+// process holds the write lock, view.sqlite missing/corrupt, a fold error),
+// fall back to openDb(db.sqlite). The canonical store is always a safe read, so
+// a view glitch degrades to "reads from db.sqlite" rather than throwing. On a
+// pure-pull clone with no db.sqlite that fallback would be an empty store, but
+// ensureFresh builds the view from the pulled events.jsonl in that exact case,
+// so the common shared-pull path serves from the fold as intended.
+//
+// The handle is a plain better-sqlite3 Database on view.sqlite. It deliberately
+// does NOT run migrate(): view.sqlite is disposable and rebuilt by the fold
+// (src/view.js VIEW_SCHEMA), which already presents the post-v0.7 read contract
+// (the rerank columns). Running the canonical migrator on it would be wrong
+// (it's not the canonical store and has no AUTOINCREMENT/version row to evolve).
+function openReadDb(pebblDir) {
+  if (storeMode(pebblDir) !== 'events') {
+    // Legacy store: the existing canonical read path, unchanged.
+    return openDb(pebblDir);
+  }
+  // Events store: fold events.jsonl -> view.sqlite (lazy, cheap when fresh),
+  // then read from the view. Best-effort, mirroring openDb's staleness guard —
+  // never let a fold failure break opening a read handle.
+  try {
+    require('./staleness').ensureFresh(pebblDir);
+  } catch {
+    // fall through; we'll try to open whatever view exists, else db.sqlite
+  }
+  const viewFile = path.join(pebblDir, 'view.sqlite');
+  if (fs.existsSync(viewFile)) {
+    try {
+      // readonly: the view is a projection; reads never write through it. (The
+      // usage-signal write recordAccess targets the CANONICAL db on the targeted
+      // lookup path, not this read handle — see context.js contextTopic.)
+      return new Database(viewFile, { readonly: true, fileMustExist: true });
+    } catch {
+      // corrupt/locked view -> fall back to the canonical store below.
+    }
+  }
+  return openDb(pebblDir);
+}
+
+module.exports = { openDb, openReadDb };
 
 function topicFilter(topic) {
   return {
