@@ -81,7 +81,12 @@ describe('cutover — findStores / inventory discovery', () => {
     const root = tmpRoot();
     try {
       mkStore(root, 'leg', { 'db.sqlite': 'x' });
-      mkStore(root, 'ev', { 'events.jsonl': '{}\n' });
+      // 'events' label needs a genuine completeness signal now that storeMode()
+      // is a completeness predicate, not bare events.jsonl presence: a bare
+      // gitignored/unrooted events.jsonl is the P0 tracer (PARTIAL) and reads
+      // canonical db.sqlite. legacy-db.sqlite (the migrator's rename) is the
+      // strongest signal an events store actually completed migration.
+      mkStore(root, 'ev', { 'events.jsonl': '{}\n', 'legacy-db.sqlite': 'x' });
       mkStore(root, 'md', { 'manual-logs.md': '# logs\n' });
       const rows = inventory(root);
       const byMode = Object.fromEntries(rows.map((r) => [path.basename(path.dirname(r.pebblDir)), r.mode]));

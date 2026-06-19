@@ -152,6 +152,12 @@ describe('migrate-to-events: real run (--apply)', () => {
     }
     assert.ok(!fs.existsSync(path.join(pebblDir, 'db.sqlite')), 'db.sqlite renamed away');
     assert.ok(fs.existsSync(path.join(pebblDir, LEGACY_DB)), 'legacy-db.sqlite is the rollback artifact');
+    // migrate --apply writes the positive completeness marker (the canonical
+    // signal for clones; storeMode step 2/3). storeMode must read 'events'.
+    const { EVENTS_CANONICAL_MARKER, storeMode } = require('../src/store-mode');
+    assert.ok(fs.existsSync(path.join(pebblDir, EVENTS_CANONICAL_MARKER)),
+      'migrate --apply must write the .events-canonical marker');
+    assert.equal(storeMode(pebblDir), 'events', 'a migrated store reads from the fold');
   });
 
   it('--write is accepted as the apply alias', () => {
