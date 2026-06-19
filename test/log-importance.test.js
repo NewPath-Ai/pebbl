@@ -1,4 +1,5 @@
 'use strict';
+require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 
 // log.js importance (rerank signal A) — set at WRITE time:
 //   - default = importanceForTier(tier) (foundation 5 / component 4 / detail 2 /

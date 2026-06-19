@@ -1,4 +1,5 @@
 'use strict';
+require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // P2 — migrator tests. We seed a real db.sqlite via the canonical openDb (so
 // the v0.5 schema + bitemporal columns + the migrate ladder all apply), insert
 // controlled logs / commits / handoffs with known FK refs, then exercise:

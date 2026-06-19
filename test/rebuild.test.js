@@ -1,4 +1,5 @@
 'use strict';
+require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // P4 — rebuild triggers, qmd off the hot path, and the `pebbl rebuild` command
 // under the per-store lock.
 //

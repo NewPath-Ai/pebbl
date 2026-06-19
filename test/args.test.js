@@ -1,4 +1,5 @@
 'use strict';
+require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { parseArgs } = require('../src/args');

@@ -6,12 +6,11 @@ const { requirePebblDir } = require('./find-pebbl');
 const { ensureProjectFiles, DEFAULT_RUBRIC, DEFAULT_CONFIG } = require('./rubric');
 const { qmdAvailable, qmdCollectionCreate } = require('./qmd');
 
-const HOOK_SCRIPT = `#!/bin/sh
-HASH=$(git log -1 --pretty=%H)
-MESSAGE=$(git log -1 --pretty=%B)
-FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | tr '\\n' ',')
-pebbl log-commit "$HASH" "$MESSAGE" "$FILES"
-`;
+// The post-commit hook template now lives in ONE place — src/init.js
+// (postCommitHook). `pebbl upgrade` rewrites the hook from that same function so
+// re-init and upgrade can never drift (DRY). It's required lazily inside
+// upgrade() to avoid a require cycle with init.js. Embed bypass + background +
+// per-store lock are documented at the init.js definition (incident 2026-06-18).
 
 function upgradeAgentsMd(cwd) {
   const agentMd = path.join(cwd, 'AGENTS.md');
@@ -107,7 +106,13 @@ module.exports = function upgrade() {
   const gitDir = path.join(cwd, '.git');
   if (fs.existsSync(gitDir)) {
     const hookPath = path.join(gitDir, 'hooks', 'post-commit');
-    fs.writeFileSync(hookPath, HOOK_SCRIPT, { mode: 0o755 });
+    // Reuse init's pinned template (lazy require avoids an init<->upgrade cycle),
+    // pinning THIS pebbl's bin so the upgraded hook runs the installed code (with
+    // the embed bypass + background), not a stale `pebbl` first on $PATH.
+    const { postCommitHook } = require('./init');
+    const pinnedBin = path.resolve(__dirname, '..', 'bin', 'pebbl.js');
+    fs.writeFileSync(hookPath, postCommitHook(pinnedBin), { mode: 0o755 });
+    fs.chmodSync(hookPath, 0o755); // mode only applies on create; force +x on rewrite
     console.log('Updated post-commit hook');
   }
 
