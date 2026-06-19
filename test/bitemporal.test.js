@@ -1,4 +1,5 @@
 'use strict';
+require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // Bi-temporal supersession (v0.5): a correction STAMPS when a belief stopped
 // being true (valid_to) instead of HIDING the superseded row, so the timeline
 // survives. These tests cover the acceptance scenarios from the traveler:

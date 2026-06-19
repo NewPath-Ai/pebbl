@@ -1,4 +1,5 @@
 'use strict';
+require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // P6 — `pebbl cutover`: read-only inventory + the rollout runbook.
 // Asserts: classification (legacy / events / md-only), inventory is genuinely
 // NON-DESTRUCTIVE, the runbook encodes the wave/soak/Q4=B-mirror/retirement

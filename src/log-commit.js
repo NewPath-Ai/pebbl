@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { findPebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
-const { qmdUpdate } = require('./qmd');
+const { qmdUpdateDeferred, embedDisabled } = require('./qmd');
 const { loadRubric, classifyEntry } = require('./rubric');
 
 module.exports = function logCommit(hash, message, files) {
@@ -35,7 +35,17 @@ module.exports = function logCommit(hash, message, files) {
       VALUES (?, 'hook', ?, 'fleeting', ?, NULL)
     `).run(ts, category, msg);
 
-    qmdUpdate(pebblDir);
+    // Reindex for `pebbl search`. Two guardrails from incident 2026-06-18:
+    //  1. BYPASS — when PEBBL_NO_HOOK / PEBBL_DISABLE_EMBED is set (the test
+    //     harness sets it process-wide), skip the embed entirely so a burst of
+    //     fixture commits fires ZERO `qmd update`. The named env vars must appear
+    //     in THIS file (and in the hook template) so the bypass is greppable and
+    //     honored before we ever reach qmd.
+    //  2. BACKGROUND — match the "Never block a commit" intent below: kick the
+    //     reindex as a DETACHED, unref'd child (qmdUpdateDeferred) so the commit
+    //     returns immediately instead of blocking on the 7-9s (~80s) embed. The
+    //     single-flight lock inside qmdUpdate caps it at 1 embed per store.
+    if (!embedDisabled()) qmdUpdateDeferred(pebblDir);
   } catch {
     // Never block a commit
   }

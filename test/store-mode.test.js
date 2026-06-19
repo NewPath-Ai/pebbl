@@ -1,4 +1,5 @@
 'use strict';
+require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // P6 — the coexistence fork (storeMode). Pure, read-only path-picker:
 // presence of events.jsonl => 'events', absent => 'legacy'. No DB open, no
 // migration side effect, additive (legacy stores unchanged).

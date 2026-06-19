@@ -32,12 +32,48 @@ ${AGENT_END}
 
 const AGENT_STANDALONE = `# Agent Guidelines\n${AGENT_SECTION}`;
 
-const HOOK_SCRIPT = `#!/bin/sh
+// post-commit hook. Captures the commit into pebbl memory, then `pebbl
+// log-commit` reindexes for search. Incident 2026-06-18 hardened the embed:
+//   - BYPASS: PEBBL_NO_HOOK / PEBBL_DISABLE_EMBED make log-commit STILL write the
+//     commit-log/db row but skip `qmd update` (the test harness sets it so a burst
+//     of fixture commits fires zero live embeds). Honored inside log-commit, so we
+//     intentionally do NOT early-exit the hook — the row must still be written.
+//   - The reindex log-commit kicks is a DETACHED background job with a
+//     single-flight lock per store, so a commit never blocks on, or fans out, an
+//     embed.
+//
+// PINNING (same pattern as the P5 hooks below): the hook bakes in the ABSOLUTE
+// path of the bin/pebbl.js that ran `init`, invoked via `node`, so it ALWAYS runs
+// the pebbl that installed it — not whatever `pebbl` is first on $PATH. This is
+// load-bearing for the bypass: a stale GLOBAL `pebbl` on $PATH (one built before
+// this incident, with no PEBBL_DISABLE_EMBED awareness) would otherwise run the
+// old blocking embed and ignore the var entirely, re-triggering the thrash even
+// though the installed code honors it. Falls back to a PATH `pebbl` only if the
+// pinned bin is gone. Keep this template in sync with src/upgrade.js.
+function postCommitHook(pinnedBin) {
+  const pin = String(pinnedBin).replace(/'/g, `'\\''`); // shell-safe single-quote
+  return `#!/bin/sh
+# pebbl post-commit: capture the commit + reindex for search.
+# Embed bypass (incident 2026-06-18): set PEBBL_NO_HOOK=1 or PEBBL_DISABLE_EMBED=1
+# to write the commit row but skip the \`qmd update\` embed. The embed itself runs
+# DETACHED in the background (never blocks the commit) with a per-store single-flight lock.
 HASH=$(git log -1 --pretty=%H)
 MESSAGE=$(git log -1 --pretty=%B)
 FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | tr '\\n' ',')
+# Pin the pebbl that installed this hook so the bypass + background behavior is the
+# INSTALLED code's, not a stale \`pebbl\` first on \$PATH.
+PINNED='${pin}'
+if [ -n "$PINNED" ] && [ -f "$PINNED" ]; then
+  exec node "$PINNED" log-commit "$HASH" "$MESSAGE" "$FILES"
+fi
 pebbl log-commit "$HASH" "$MESSAGE" "$FILES"
 `;
+}
+
+// Backward-compatible unpinned template (no installing-bin path baked in). Kept
+// for callers/tests that reference HOOK_SCRIPT directly; the INSTALLED hook uses
+// the pinned postCommitHook() above.
+const HOOK_SCRIPT = postCommitHook('');
 
 // P4 — post-merge / post-checkout rebuild trigger. A `git merge` or
 // `git checkout` can pull NEW events.jsonl lines into the store (the whole
@@ -150,7 +186,11 @@ function init() {
       fs.writeFileSync(p, body, { mode: 0o755 });
       fs.chmodSync(p, 0o755);
     };
-    writeHook('post-commit', HOOK_SCRIPT);
+    // Absolute path of THIS bin/pebbl.js — pinned into the hooks so they run the
+    // pebbl that installed them, not whatever `pebbl` is first on $PATH (used by
+    // both the post-commit and the P5 pre-commit/pre-push hooks below).
+    const pinnedBin = path.resolve(__dirname, '..', 'bin', 'pebbl.js');
+    writeHook('post-commit', postCommitHook(pinnedBin));
     console.log('Installed post-commit hook');
     // P4: post-merge + post-checkout mark the view stale (sentinel touch only);
     // the rebuild is lazy on the next pebbl command, never inside the hook.
@@ -159,10 +199,9 @@ function init() {
     console.log('Installed post-merge and post-checkout rebuild hooks');
     // P5: pre-commit + pre-push secret/PII scanner, installed ADDITIVELY
     // alongside the hooks above (a forward gate runs on every commit/push, not
-    // one-shot at init). These do NOT replace the post-* hooks. The hook pins
-    // the ABSOLUTE path of THIS bin/pebbl.js so it always runs the pebbl that
-    // installed it, not whatever pebbl happens to be first on $PATH.
-    const pinnedBin = path.resolve(__dirname, '..', 'bin', 'pebbl.js');
+    // one-shot at init). These do NOT replace the post-* hooks. They reuse the
+    // same pinnedBin computed above so they always run the pebbl that installed
+    // them, not whatever pebbl happens to be first on $PATH.
     writeHook('pre-commit', hookScript('--staged', pinnedBin));
     writeHook('pre-push', hookScript('--push', pinnedBin));
     console.log('Installed pre-commit and pre-push privacy-scan hooks');
@@ -264,3 +303,7 @@ module.exports = init;
 module.exports.AGENT_SECTION = AGENT_SECTION;
 module.exports.AGENT_BEGIN = AGENT_BEGIN;
 module.exports.AGENT_END = AGENT_END;
+// Exported so src/upgrade.js installs the SAME pinned post-commit hook (DRY —
+// one template, no drift between init and upgrade).
+module.exports.postCommitHook = postCommitHook;
+module.exports.HOOK_SCRIPT = HOOK_SCRIPT;
