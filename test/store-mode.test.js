@@ -1,15 +1,19 @@
 'use strict';
 require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
-// P6 — the coexistence fork (storeMode). Pure, read-only path-picker:
-// presence of events.jsonl => 'events', absent => 'legacy'. No DB open, no
-// migration side effect, additive (legacy stores unchanged).
+// P6 — the coexistence fork (storeMode). Pure, read-only COMPLETENESS predicate:
+// 'events' ONLY when events.jsonl is the complete store (legacy-db.sqlite present,
+// or the .events-canonical marker, or events.jsonl is git-tracked); a partial /
+// gitignored tracer => 'legacy' (read canonical db.sqlite). No DB open, no
+// migration side effect, additive (legacy stores unchanged). The exhaustive
+// 5-step + 7-acceptance coverage lives in store-mode-completeness.test.js; this
+// file holds the original purity/re-export invariants.
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { storeMode } = require('../src/store-mode');
+const { storeMode, EVENTS_CANONICAL_MARKER, LEGACY_DB } = require('../src/store-mode');
 const fromFindPebbl = require('../src/find-pebbl').storeMode;
 
 function tmpPebbl() {
@@ -29,10 +33,25 @@ describe('storeMode — the events.jsonl presence fork', () => {
     }
   });
 
-  it('reports events when events.jsonl is present (Acceptance #3)', () => {
+  it('reports events when events.jsonl is COMPLETE (legacy-db.sqlite present)', () => {
+    // Completeness predicate (not bare presence): a migrated store has its
+    // db.sqlite renamed to legacy-db.sqlite — that rename is the migrator's
+    // idempotency marker and the strongest completeness signal.
     const { dir, pebblDir } = tmpPebbl();
     try {
       fs.writeFileSync(path.join(pebblDir, 'events.jsonl'), '{}\n');
+      fs.writeFileSync(path.join(pebblDir, LEGACY_DB), 'renamed-db');
+      assert.equal(storeMode(pebblDir), 'events');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports events when the positive .events-canonical marker is present', () => {
+    const { dir, pebblDir } = tmpPebbl();
+    try {
+      fs.writeFileSync(path.join(pebblDir, 'events.jsonl'), '{}\n');
+      fs.writeFileSync(path.join(pebblDir, EVENTS_CANONICAL_MARKER), 'canonical\n');
       assert.equal(storeMode(pebblDir), 'events');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -70,11 +89,15 @@ describe('storeMode — the events.jsonl presence fork', () => {
     assert.equal(storeMode(undefined), 'legacy');
   });
 
-  it('an even empty events.jsonl (zero-byte) still routes to events', () => {
+  it('a bare events.jsonl with NO completeness signal routes to legacy (the tracer fix)', () => {
+    // The regression fix: a present-but-partial events.jsonl (the P0 tracer) with
+    // no legacy-db.sqlite, no marker, and no git answer (tmp dir is not a repo,
+    // so step-4 check-ignore errors -> the SAFE direction) must read the
+    // canonical db.sqlite => 'legacy'. Bare presence is no longer enough.
     const { dir, pebblDir } = tmpPebbl();
     try {
       fs.writeFileSync(path.join(pebblDir, 'events.jsonl'), '');
-      assert.equal(storeMode(pebblDir), 'events');
+      assert.equal(storeMode(pebblDir), 'legacy');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

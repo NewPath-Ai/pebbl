@@ -6,6 +6,10 @@ const { openDb } = require('./db');
 const { qmdAvailable, qmdCollectionCreate } = require('./qmd');
 const { DEFAULT_RUBRIC, DEFAULT_CONFIG } = require('./rubric');
 const { detectRemoteVisibility } = require('./privacy-scan');
+// DRY: the positive completeness marker name is owned by store-mode.js (its
+// reader); shared init writes it so storeMode() classifies a fresh shared store
+// as 'events' without depending on a per-read git spawn.
+const { EVENTS_CANONICAL_MARKER } = require('./store-mode');
 
 const AGENT_BEGIN = '<!-- pebbl:begin -->';
 const AGENT_END = '<!-- pebbl:end -->';
@@ -369,6 +373,26 @@ function init(argv) {
     ensureIgnoreLine('.pebbl/.rebuild-needed', '.pebbl/.rebuild-needed (local sentinel)');
     ensureIgnoreLine('.pebbl/qmd/', '.pebbl/qmd/ (local semantic index)');
     ensureIgnoreLine('!.pebbl/events.jsonl', '.pebbl/events.jsonl (SHARED — committed)');
+    // Positive completeness marker: a fresh shared store is 'events' via
+    // storeMode step 3 even before its first `pebbl log`. NOT gitignored (shared
+    // mode ignores files explicitly by name, never blanket-ignores .pebbl/), so
+    // it is committed alongside events.jsonl and pulled by clones. fs.mkdirSync
+    // is idempotent; ensure the dir exists before the write (re-init is safe).
+    fs.mkdirSync(pebblDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pebblDir, EVENTS_CANONICAL_MARKER),
+      'events.jsonl is the canonical store (written by pebbl init --shared)\n'
+    );
+    // Materialize an EMPTY events.jsonl so storeMode()'s step-1 "no events.jsonl"
+    // short-circuit does not pre-empt the marker (step 3) on a brand-new shared
+    // store that has not been `pebbl log`-ed yet. An empty log folds to an empty
+    // view and db.sqlite is empty too, so this is harmless; the first `pebbl log`
+    // appends to it as usual. Do NOT clobber a pre-existing log (re-init / a
+    // store upgraded LOCAL->shared may already have one).
+    const sharedEventsPath = path.join(pebblDir, 'events.jsonl');
+    if (!fs.existsSync(sharedEventsPath)) {
+      fs.writeFileSync(sharedEventsPath, '');
+    }
     console.log('Shared mode: events.jsonl is the COMMITTED source of truth; the SQLite indexes');
     console.log('and the derived markdown stay local (rebuilt from the fold on the next read).');
   } else {

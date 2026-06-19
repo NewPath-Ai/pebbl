@@ -48,6 +48,9 @@ const { requirePebblDir } = require('./find-pebbl');
 const { ulid } = require('./ulid');
 const { withLock } = require('./lock');
 const { appendEvent, resolveActor, eventsPath, ENVELOPE_VERSION } = require('./events');
+// DRY: the positive completeness marker name lives in store-mode.js (the reader
+// of it) so init, migrate, and the predicate never drift on the filename.
+const { EVENTS_CANONICAL_MARKER } = require('./store-mode');
 
 const LEGACY_DB = 'legacy-db.sqlite';
 // A pre-existing events.jsonl on an UN-migrated store is the P0 TRACER log —
@@ -452,6 +455,15 @@ module.exports = function migrateToEvents(args = []) {
     }
     // ADDITIVE: never delete db.sqlite — rename to the rollback artifact.
     fs.renameSync(dbPath, path.join(pebblDir, LEGACY_DB));
+    // ADDITIVE + atomic with the rename, under the same lock: write the positive
+    // completeness marker so reads-from-fold engages even after compaction
+    // re-creates db.sqlite, and so clones that pull the marker read from the
+    // fold. (storeMode step 2 already covers stores migrated under OLD code with
+    // no marker; this is the canonical signal for the migrated case.)
+    fs.writeFileSync(
+      path.join(pebblDir, EVENTS_CANONICAL_MARKER),
+      'events.jsonl is the canonical store (written by migrate-to-events --apply)\n'
+    );
   });
 
   console.log(renderPlan(report, events.length, true));
