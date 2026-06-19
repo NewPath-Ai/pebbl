@@ -38,6 +38,19 @@ function seededProject() {
   spawnSync('node', [BIN, 'log', 'seed', '--tier', 'detail', '--cat', 'quality'],
     { cwd: d, encoding: 'utf8' });
 
+  // This test seeds db.sqlite DIRECTLY (hand-stuffed rows below), which is the
+  // LEGACY (db.sqlite-truth) read contract. The throwaway `seed` log above also
+  // wrote an events.jsonl, which would flip the store to events-mode and make
+  // `context` read the folded view.sqlite (Wire 2 reads-from-fold) instead of
+  // our hand-stuffed db.sqlite — surfacing only "seed", not our fixtures. Remove
+  // the events artifacts so the store is unambiguously legacy and this test
+  // exercises the db.sqlite rerank read path exactly as before. (Events-mode
+  // reads-from-fold ordering is covered by shared-mode.test.js via a REAL log
+  // path where events.jsonl and db.sqlite agree.)
+  for (const f of ['events.jsonl', 'events.local.jsonl', 'view.sqlite']) {
+    try { fs.rmSync(path.join(d, '.pebbl', f), { force: true }); } catch {}
+  }
+
   const db = new Database(path.join(d, '.pebbl', 'db.sqlite'));
   db.exec('DELETE FROM logs');
   const ins = db.prepare(`

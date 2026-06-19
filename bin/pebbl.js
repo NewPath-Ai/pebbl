@@ -8,7 +8,7 @@ const [,, command, ...args] = process.argv;
 const wantsHelp = (a) => a.includes('--help') || a.includes('-h');
 
 const commands = {
-  init:         () => require('../src/init')(),
+  init:         () => require('../src/init')(args),
   log:          () => require('../src/log')(args),
   search:       () => require('../src/search')(args),
   context:      () => require('../src/context')(args),

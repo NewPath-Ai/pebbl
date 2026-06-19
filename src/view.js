@@ -22,6 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { foldFull } = require('./fold');
+const { importanceForTier } = require('./rank');
 
 // ── markdown emitters (byte-identical tails) ─────────────────────────────────
 
@@ -115,6 +116,17 @@ function byTimestampAscStable(a, b) {
 // relates_to come straight from the eid->int map (FK translation), so the
 // read-side subqueries (`valid_to IS NULL`, `id NOT IN (...)`, `b.id - a.id`)
 // behave identically off this view. Returns the file path.
+// The view's `logs` table must present the SAME read contract the read path
+// (context.js / search.js) expects off db.sqlite AFTER the v0.6/v0.7 migrations:
+// the rerank signal columns `importance` / `access_count` / `last_accessed` are
+// SELECTed by context's queries (and by rank.js's score), so the view carries
+// them too or those reads throw "no such column". They are NOT in the events
+// envelope (guardrail: don't change the envelope) — usage is a LOCAL runtime
+// signal — so the fold supplies importance tier-derived (importanceForTier, the
+// same source of truth log.js + the v0.6/v0.7 migration use, DRY) and leaves
+// access_count/last_accessed at their column defaults (0 / NULL). A freshly
+// folded view from a teammate's events therefore reads exactly like a fresh,
+// zero-usage db.sqlite at v0.7 — which is correct: usage accrues per machine.
 const VIEW_SCHEMA = `
 CREATE TABLE IF NOT EXISTS logs (
   id         INTEGER PRIMARY KEY,
@@ -128,7 +140,10 @@ CREATE TABLE IF NOT EXISTS logs (
   corrects   INTEGER,
   valid_from TEXT,
   valid_to   TEXT,
-  invalidated_by INTEGER
+  invalidated_by INTEGER,
+  importance REAL DEFAULT 0,
+  access_count INTEGER DEFAULT 0,
+  last_accessed TEXT DEFAULT NULL
 );
 CREATE TABLE IF NOT EXISTS commits (
   id        INTEGER PRIMARY KEY,
@@ -165,11 +180,16 @@ function writeViewSqlite(projection, viewPath) {
   const db = new Database(viewPath);
   try {
     db.exec(VIEW_SCHEMA);
+    // access_count / last_accessed are intentionally omitted so the column
+    // DEFAULTs (0 / NULL) apply — usage is a per-machine runtime signal, not
+    // folded from the shared events. importance IS written, tier-derived.
     const insLog = db.prepare(`
       INSERT INTO logs (id, timestamp, source, category, tier, message, topics,
-                        relates_to, corrects, valid_from, valid_to, invalidated_by)
+                        relates_to, corrects, valid_from, valid_to, invalidated_by,
+                        importance)
       VALUES (@id, @timestamp, @source, @category, @tier, @message, @topics,
-              @relates_to, @corrects, @valid_from, @valid_to, @invalidated_by)
+              @relates_to, @corrects, @valid_from, @valid_to, @invalidated_by,
+              @importance)
     `);
     const insHandoff = db.prepare(`
       INSERT INTO handoffs (id, timestamp, summary, done, todo, blocked, topics,
@@ -196,6 +216,13 @@ function writeViewSqlite(projection, viewPath) {
           valid_from: r.valid_from || r.timestamp,
           valid_to: r.valid_to,
           invalidated_by: r.invalidated_by,
+          // Tier-derived default (importanceForTier — same mapping log.js and
+          // the v0.7 migration use), unless the folded row already carries an
+          // explicit importance. Keeps rerank tier-aware on a freshly folded
+          // view even though access_count starts at 0.
+          importance: (r.importance != null && r.importance !== 0)
+            ? r.importance
+            : importanceForTier(r.tier),
         });
       }
       for (const h of projection.handoffs) {
