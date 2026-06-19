@@ -414,3 +414,199 @@ describe('migrate-to-events: map-first invariant', () => {
     }
   });
 });
+
+// ── --repair: dangling FK refs migrate instead of aborting the whole store ─────
+
+const { REPAIR_MANIFEST } = require('../src/migrate-to-events');
+
+// Run the CLI capturing stdout/stderr/status without throwing on non-zero.
+function runCliCapture(repo, args) {
+  const { spawnSync } = require('child_process');
+  const r = spawnSync('node', [PEBBL_BIN, ...args], { cwd: repo, encoding: 'utf8' });
+  return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+}
+
+// Make a real git commit in the repo so its hash is RECOVERABLE from git.
+function makeRealCommit(repo, name, content) {
+  fs.writeFileSync(path.join(repo, name), content);
+  execFileSync('git', ['add', name], { cwd: repo });
+  execFileSync('git', ['commit', '-q', '-m', `add ${name}`], { cwd: repo, env: { ...process.env, PEBBL_DISABLE_EMBED: '1' } });
+  return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+}
+
+describe('migrate-to-events: --repair dangling session_commits', () => {
+  // The headline acceptance: a store with a handoff -> non-existent commit hash
+  // ABORTS at default --apply (db untouched) but COMPLETES under --apply --repair
+  // with a manifest, marker, rename, read parity, and a no-op second run.
+  it('default --apply ABORTS and leaves db.sqlite untouched; --apply --repair COMPLETES with a manifest', () => {
+    const repo = tmpRepo();
+    const pebblDir = seed(repo);
+    // plant a handoff referencing a commit hash that is NOT in the commits table
+    // AND not reachable in git -> the unrecoverable drop-with-manifest path.
+    const db = openDb(pebblDir);
+    db.prepare(
+      'INSERT INTO handoffs (timestamp, summary, source, session_entries, session_commits, status) VALUES (?,?,?,?,?,?)'
+    ).run('2026-02-01T00:00:00.000Z', 'dangling commit handoff', 'agent', JSON.stringify([1]), JSON.stringify(['deadbeef']), 'open');
+    db.close();
+
+    // capture the pre-migration read surface (for parity) BEFORE any rename
+    const dbRowsBefore = liveLogRows(pebblDir);
+
+    // 1) default --apply -> ABORT, nothing written, db.sqlite untouched
+    const strict = runCliCapture(repo, ['migrate-to-events', '--apply']);
+    assert.notEqual(strict.status, 0, 'default --apply exits non-zero on a dangling commit');
+    assert.match(strict.stderr, /ABORT/);
+    assert.ok(!fs.existsSync(eventsPath(pebblDir)), 'no partial events.jsonl after strict abort');
+    assert.ok(fs.existsSync(path.join(pebblDir, 'db.sqlite')), 'db.sqlite untouched after strict abort');
+    assert.ok(!fs.existsSync(path.join(pebblDir, LEGACY_DB)), 'no legacy rename after strict abort');
+    assert.ok(!fs.existsSync(path.join(pebblDir, REPAIR_MANIFEST)), 'no manifest written in strict mode');
+
+    // 2) --apply --repair -> COMPLETE: events.jsonl, rename, marker, manifest
+    const rep = runCliCapture(repo, ['migrate-to-events', '--apply', '--repair']);
+    assert.equal(rep.status, 0, '--apply --repair completes (exit 0)');
+    assert.ok(fs.existsSync(eventsPath(pebblDir)), 'events.jsonl written under --repair');
+    assert.ok(!fs.existsSync(path.join(pebblDir, 'db.sqlite')), 'db.sqlite renamed away under --repair');
+    assert.ok(fs.existsSync(path.join(pebblDir, LEGACY_DB)), 'legacy-db.sqlite rollback artifact present');
+    const { EVENTS_CANONICAL_MARKER, storeMode } = require('../src/store-mode');
+    assert.ok(fs.existsSync(path.join(pebblDir, EVENTS_CANONICAL_MARKER)), '.events-canonical marker present');
+    assert.equal(storeMode(pebblDir), 'events', 'migrated store reads from the fold');
+
+    // events.jsonl is complete + valid (every line parses, LF-terminated)
+    const raw = fs.readFileSync(eventsPath(pebblDir), 'utf8');
+    assert.equal(raw[raw.length - 1], '\n', 'trailing-newline invariant holds');
+    for (const line of raw.split('\n').filter(Boolean)) {
+      assert.doesNotThrow(() => JSON.parse(line), 'every events.jsonl line is valid JSON');
+    }
+
+    // the manifest names exactly what was dropped (handoff id + hash)
+    assert.ok(fs.existsSync(path.join(pebblDir, REPAIR_MANIFEST)), 'manifest written when something was repaired');
+    const manifest = JSON.parse(fs.readFileSync(path.join(pebblDir, REPAIR_MANIFEST), 'utf8'));
+    assert.equal(manifest.dropped_commits.length, 1, 'one dropped commit recorded');
+    assert.equal(manifest.dropped_commits[0].hash, 'deadbeef', 'manifest names the dropped hash');
+    assert.ok(manifest.dropped_commits[0].handoff != null, 'manifest names the owning handoff id');
+    assert.match(rep.stderr, /DROPPED dangling commit deadbeef/);
+
+    // 3) read parity: every memory ENTRY survives (only the back-link element changed)
+    const proj = foldFull(readEvents(pebblDir));
+    const foldedRows = proj.logs
+      .slice()
+      .sort((a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : a.id - b.id))
+      .map((r) => ({ timestamp: r.timestamp, source: r.source, category: r.category, tier: r.tier, message: r.message, topics: r.topics || null }));
+    assert.deepEqual(foldedRows, dbRowsBefore, 'no memory entry lost: folded logs == pre-migration db.sqlite logs');
+
+    // the surviving session_commits for that handoff is now empty (element dropped)
+    const open = readEvents(pebblDir).find((e) => e.type === 'handoff-open' && e.summary === 'dangling commit handoff');
+    assert.ok(open, 'the repaired handoff still migrated');
+    assert.deepEqual(open.session_commits, [], 'the single dangling element was dropped, not the handoff');
+    assert.equal(open.session_entries.length, 1, 'the valid session_entries ref (log #1) is preserved — only the bad commit element was dropped');
+
+    // 4) idempotency: a second --repair run is a safe no-op
+    const second = runCliCapture(repo, ['migrate-to-events', '--apply', '--repair']);
+    assert.equal(second.status, 0, 'second --repair run exits 0');
+    assert.match(second.stdout, /already migrated/);
+    const rawAfter = fs.readFileSync(eventsPath(pebblDir), 'utf8');
+    assert.equal(rawAfter, raw, 'events.jsonl byte-identical after the no-op second run');
+  });
+
+  it('--repair RECOVERS a git-reachable commit hash (backfills a commits row) instead of dropping', () => {
+    const repo = tmpRepo();
+    // a REAL commit -> its hash is recoverable from git
+    const realHash = makeRealCommit(repo, 'feature.js', 'export const x = 1;\n');
+    const pebblDir = seed(repo);
+    // handoff references the real commit hash, which is NOT in the commits table
+    const db = openDb(pebblDir);
+    db.prepare(
+      'INSERT INTO handoffs (timestamp, summary, source, session_entries, session_commits, status) VALUES (?,?,?,?,?,?)'
+    ).run('2026-02-02T00:00:00.000Z', 'recoverable commit handoff', 'agent', JSON.stringify([]), JSON.stringify([realHash]), 'open');
+    db.close();
+
+    const rep = runCliCapture(repo, ['migrate-to-events', '--apply', '--repair']);
+    assert.equal(rep.status, 0, '--repair completes');
+    const manifest = JSON.parse(fs.readFileSync(path.join(pebblDir, REPAIR_MANIFEST), 'utf8'));
+    assert.equal(manifest.recovered_commits.length, 1, 'the reachable commit was recovered, not dropped');
+    assert.equal(manifest.recovered_commits[0].hash, realHash, 'manifest names the recovered hash');
+    assert.equal(manifest.dropped_commits.length, 0, 'nothing dropped when git recovery succeeds');
+    assert.match(rep.stderr, /RECOVERED commit/);
+
+    // the recovered commit appears as a real `commit` event and the handoff links it
+    const events = readEvents(pebblDir);
+    const open = events.find((e) => e.type === 'handoff-open' && e.summary === 'recoverable commit handoff');
+    assert.equal(open.session_commits.length, 1, 'the recovered commit element survives');
+    const commitEids = new Set(events.filter((e) => e.type === 'commit').map((e) => e.eid));
+    assert.ok(commitEids.has(open.session_commits[0]), 'session_commits points at a minted commit event');
+    const recoveredCommit = events.find((e) => e.type === 'commit' && e.hash === realHash);
+    assert.ok(recoveredCommit, 'a commit event was backfilled for the recovered hash');
+    assert.match(recoveredCommit.message, /add feature\.js/, 'backfilled commit carries the real subject from git');
+  });
+
+  it('--repair clears a dangling logs.corrects (row migrates as a plain append) and records it', () => {
+    const repo = tmpRepo();
+    const pebblDir = seed(repo);
+    // plant a dangling corrects -> 999 (the strict-abort test fixture, now repaired)
+    const db = openDb(pebblDir);
+    db.prepare('INSERT INTO logs (timestamp, source, category, tier, message, valid_from) VALUES (?,?,?,?,?,?)')
+      .run('2026-02-03T00:00:00.000Z', 'human', 'correction', 'detail', 'dangling correct', '2026-02-03T00:00:00.000Z');
+    db.prepare('UPDATE logs SET corrects = 999 WHERE message = ?').run('dangling correct');
+    db.close();
+
+    const rep = runCliCapture(repo, ['migrate-to-events', '--apply', '--repair']);
+    assert.equal(rep.status, 0, '--repair completes past a dangling corrects');
+    const manifest = JSON.parse(fs.readFileSync(path.join(pebblDir, REPAIR_MANIFEST), 'utf8'));
+    assert.equal(manifest.dropped_corrects.length, 1, 'the dangling corrects was cleared');
+    assert.equal(manifest.dropped_corrects[0].target, 999, 'manifest names the missing target');
+
+    // the row still migrated, now as a plain append (no corrects link)
+    const events = readEvents(pebblDir);
+    const row = events.find((e) => e.message === 'dangling correct');
+    assert.equal(row.type, 'append', 'a row whose corrects dangled migrates as a plain append');
+    assert.ok(!('corrects' in row), 'no corrects link survives');
+  });
+
+  it('--repair drops a dangling session_entries element and records the handoff + log id', () => {
+    const repo = tmpRepo();
+    const pebblDir = seed(repo, { withCorrect: false });
+    const db = openDb(pebblDir);
+    db.prepare(
+      'INSERT INTO handoffs (timestamp, summary, source, session_entries, session_commits, status) VALUES (?,?,?,?,?,?)'
+    ).run('2026-02-04T00:00:00.000Z', 'bad entry', 'agent', JSON.stringify([1, 777]), JSON.stringify([]), 'open');
+    db.close();
+
+    const rep = runCliCapture(repo, ['migrate-to-events', '--apply', '--repair']);
+    assert.equal(rep.status, 0, '--repair completes past a dangling session_entries element');
+    const manifest = JSON.parse(fs.readFileSync(path.join(pebblDir, REPAIR_MANIFEST), 'utf8'));
+    assert.equal(manifest.dropped_session_entries.length, 1, 'one dangling entry dropped');
+    assert.deepEqual(
+      { handoff: manifest.dropped_session_entries[0].handoff != null, logId: manifest.dropped_session_entries[0].logId },
+      { handoff: true, logId: 777 },
+      'manifest names the owning handoff and the missing log id'
+    );
+
+    // the surviving entry (#1) is kept; only #777 was dropped
+    const open = readEvents(pebblDir).find((e) => e.type === 'handoff-open' && e.summary === 'bad entry');
+    assert.equal(open.session_entries.length, 1, 'the surviving session_entries element is kept');
+  });
+
+  it('--repair on a CLEAN store writes NO manifest and behaves like a plain --apply', () => {
+    const repo = tmpRepo();
+    const pebblDir = seed(repo); // no planted dangling refs
+    const rep = runCliCapture(repo, ['migrate-to-events', '--apply', '--repair']);
+    assert.equal(rep.status, 0, '--repair on a clean store completes');
+    assert.ok(fs.existsSync(eventsPath(pebblDir)), 'events.jsonl written');
+    assert.ok(!fs.existsSync(path.join(pebblDir, REPAIR_MANIFEST)), 'no manifest when nothing needed repair');
+    assert.ok(!/ALTERED the store/.test(rep.stderr), 'no LOUD repair warning when nothing was repaired');
+  });
+
+  it('default --apply (no --repair) on a dangling-corrects store still ABORTS (strict unchanged)', () => {
+    const repo = tmpRepo();
+    const pebblDir = seed(repo);
+    const db = openDb(pebblDir);
+    db.prepare('INSERT INTO logs (timestamp, source, category, tier, message, valid_from) VALUES (?,?,?,?,?,?)')
+      .run('2026-02-05T00:00:00.000Z', 'human', 'correction', 'detail', 'still dangling', '2026-02-05T00:00:00.000Z');
+    db.prepare('UPDATE logs SET corrects = 999 WHERE message = ?').run('still dangling');
+    db.close();
+    const strict = runCliCapture(repo, ['migrate-to-events', '--apply']);
+    assert.notEqual(strict.status, 0, 'strict default still aborts on a dangling corrects');
+    assert.ok(!fs.existsSync(eventsPath(pebblDir)), 'no events.jsonl after strict abort');
+    assert.ok(fs.existsSync(path.join(pebblDir, 'db.sqlite')), 'db.sqlite untouched');
+  });
+});
