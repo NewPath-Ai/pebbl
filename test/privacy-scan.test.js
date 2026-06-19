@@ -76,11 +76,11 @@ describe('privacy-scan — token-shape class', () => {
     assert.ok(scan('token sk-ant-oat01-abc123def456').some((h) => h.class === 'token'));
   });
   it('flags an AWS access key and a github token', () => {
-    assert.ok(scan('key AKIAIOSFODNN7EXAMPLE').some((h) => h.class === 'token'));
+    assert.ok(scan('key AKIAIOSFODNN7EXAMPLE').some((h) => h.class === 'token')); // allowlist-secret (AWS docs example key, not a real credential)
     assert.ok(scan('ghp_0123456789abcdefghijABCDEFGHIJ0123').some((h) => h.class === 'token'));
   });
   it('flags a private key block header', () => {
-    assert.ok(scan('-----BEGIN OPENSSH PRIVATE KEY-----').some((h) => h.class === 'token'));
+    assert.ok(scan('-----BEGIN OPENSSH PRIVATE KEY-----').some((h) => h.class === 'token')); // allowlist-secret (header literal only, no key material)
   });
 });
 
