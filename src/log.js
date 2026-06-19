@@ -10,6 +10,7 @@ const { isThinEntry } = require('./detect-thin');
 const { execFileSync } = require('child_process');
 const { appendLogEvent } = require('./events');
 const { detectRemoteVisibility } = require('./privacy-scan');
+const { importanceForTier } = require('./rank');
 
 // P5 — foundation private-by-default (design Q3=B). Decide whether THIS entry's
 // event goes to the PRIVATE events.local.jsonl (machine-only) or the SHARED
@@ -221,6 +222,23 @@ module.exports = function log(args) {
   const relatesTo = flags.relates ? parseInt(flags.relates, 10) : null;
   const corrects = flags.corrects ? parseInt(flags.corrects, 10) : null;
 
+  // Rerank signal (A): importance is tier-derived by default, NOT 0. This is the
+  // launch no-regression safety — at launch access_count is 0 everywhere, so the
+  // usage term is flat; a tier-derived importance keeps rerank ordering tier-aware
+  // so it does not regress below the live tier-then-id ordering on day one.
+  // Overridable via --importance <0..5> for a hand-graded entry. importanceForTier
+  // lives in rank.js as the single source of truth (the migration backfill reuses
+  // it) so the two cannot drift.
+  let importance = importanceForTier(tier);
+  if (flags.importance !== undefined) {
+    const parsed = Number(flags.importance);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 5) {
+      console.error(`pebbl: --importance expects a number 0..5, got "${flags.importance}"`);
+      process.exit(1);
+    }
+    importance = parsed;
+  }
+
   if (!isSession && !flags.cat && category === 'uncategorized') {
     console.error(`pebbl: no --cat given and rubric didn't match — entry stored as 'uncategorized'`);
     console.error(`       pick one: ${VALID_CATEGORIES.join(', ')}`);
@@ -263,11 +281,13 @@ module.exports = function log(args) {
   fs.appendFileSync(path.join(pebblDir, 'manual-logs.md'), md);
 
   // Bi-temporal (v0.5): a new entry is the current belief, valid from now with
-  // an open valid_to.
+  // an open valid_to. importance (v0.7) is set at log time so a fresh row is
+  // tier-weighted for rerank immediately; access_count/last_accessed keep their
+  // column defaults (0 / NULL) and only move when the entry is surfaced on a read.
   const info = db.prepare(`
-    INSERT INTO logs (timestamp, source, category, tier, message, topics, relates_to, corrects, valid_from, valid_to)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-  `).run(ts, source, category, tier, message, topics, relatesTo, corrects, ts);
+    INSERT INTO logs (timestamp, source, category, tier, message, topics, relates_to, corrects, valid_from, valid_to, importance)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+  `).run(ts, source, category, tier, message, topics, relatesTo, corrects, ts, importance);
   const newId = Number(info.lastInsertRowid);
 
   // On --corrects, stamp the TARGET's valid_to (when it stopped being true) and

@@ -6,7 +6,7 @@ const KNOWN_FLAGS = new Set([
   'done', 'todo', 'blocked', 'docs', 'latest', 'list', 'close',
   'open', 'list-open',
   'show', 'generate', 'include-archive', 'deep', 'n', 'refresh',
-  'as-of', 'history', 'share',
+  'as-of', 'history', 'share', 'importance',
 ]);
 
 const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'open', 'list-open', 'show', 'generate', 'include-archive', 'deep', 'refresh', 'share']);

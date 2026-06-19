@@ -107,6 +107,31 @@ function migrate(db) {
     setVersion(db, 0.6);
     console.error('pebbl: migrated db to v0.6 (rerank signals)');
   }
+  if (version < 0.7) {
+    // Rerank importance backfill: v0.6 added the importance column with a 0
+    // default, which scores 0 and (at launch, with access_count 0 everywhere)
+    // collapses rerank to ~pure recency — a regression below the live
+    // tier-then-id ordering. Make importance tier-derived so rerank stays
+    // tier-aware on existing rows too. Idempotent + conservative: only rows
+    // STILL at the 0 default are touched, so a re-run is a no-op and any
+    // hand-set importance (e.g. via --importance) is never clobbered. The
+    // mapping is the single source of truth in rank.js (importanceForTier), the
+    // same one log.js uses at write time, so backfill and log-time defaults
+    // cannot drift.
+    const cols = new Set(db.prepare('PRAGMA table_info(logs)').all().map(c => c.name));
+    if (cols.has('importance') && cols.has('tier')) {
+      const { TIER_IMPORTANCE } = require('./rank');
+      const backfill = db.transaction(() => {
+        const stmt = db.prepare('UPDATE logs SET importance = ? WHERE tier = ? AND importance = 0');
+        for (const [tier, value] of Object.entries(TIER_IMPORTANCE)) {
+          stmt.run(value, tier);
+        }
+      });
+      backfill();
+    }
+    setVersion(db, 0.7);
+    console.error('pebbl: migrated db to v0.7 (tier-derived importance backfill)');
+  }
 }
 
 module.exports = { migrate, getVersion };
