@@ -79,6 +79,20 @@ points you at \`--corrects\` so you can supersede a wrong entry yourself.
 Flags:
   --deep    also grep the repo for backtick-wrapped symbols (slower, opt-in)
 `,
+  doctor: `pebbl doctor — report-only memory-health check (memory vs memory)
+
+Surfaces CURRENT beliefs that are probably wrong so you can correct them,
+grouped into three dimensions: contradictions (two unlinked current entries on
+a shared topic with high term-overlap), staleness (an old entry nothing newer
+reinforces — low confidence), and missing artifact (reuses \`check\`). Report
+only — never edits; it points you at \`--corrects\`. Conservative and capped by
+default; a clean store prints a single reassuring line.
+
+Flags:
+  --json    emit candidates as a JSON array (for tooling)
+  --all     widen past the conservative caps / thresholds
+  --deep    also grep the repo for backtick-wrapped symbols (same as check)
+`,
   'scan-commits': `pebbl scan-commits — nudge to log decisions never captured
 
 Scans recent commits for decision-shaped changes (the rubric's decision-verb
@@ -274,6 +288,7 @@ Commands:
   handoff     create a session handoff
   narrative   view or set project narrative
   compact     compact entries
+  doctor      report-only memory-health check (contradictions, staleness, missing files)
   audit-history  read-only scan of committed .md history for leaks
   feedback    record feedback about pebbl
   upgrade     update .pebbl/ to latest
