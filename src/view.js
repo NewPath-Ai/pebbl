@@ -253,6 +253,17 @@ function writeViewSqlite(projection, viewPath) {
       }
     });
     tx();
+    // Build the disposable FTS5 search index in the SAME seam that writes the
+    // view rows, so a freshly-folded view.sqlite (events-mode read path) and the
+    // rebuilt db.sqlite (compact.rebuildReadModelFromEvents) both ship a current
+    // index — no separate lifecycle, no new file (it rides inside this DB, which
+    // is already gitignored). External-content over the `logs` rows just inserted
+    // above; rebuildable from events.jsonl because those rows came from the fold.
+    // Lazy require breaks the view.js <-> db.js (-> staleness -> view) cycle.
+    // Best-effort: FTS is derived — a build failure must not break the fold.
+    try {
+      require('./db').buildFtsIndex(db);
+    } catch { /* FTS is disposable; search falls back to LIKE if it's absent */ }
   } finally {
     db.close();
   }

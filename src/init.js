@@ -344,6 +344,10 @@ function init(argv) {
     //                          committed, even shared (the fold unions it in
     //                          locally; git only ever carries events.jsonl).
     //   - view.sqlite        : the disposable fold projection (rebuilt on read).
+    //                          The FTS5 search index (logs_fts) is an external-
+    //                          content virtual table built INSIDE this same file
+    //                          (and inside db.sqlite), so it rides this ignore
+    //                          line — there is no separate index file to gitignore.
     //   - db.sqlite          : the local canonical index (binary, unmergeable).
     //   - the derived MARKDOWN (manual-logs.md / handoffs.md / commit-log.md /
     //     narrative.md / events-view.md): these are a RENDERING of the fold, not
