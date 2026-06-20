@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 
 // context ordering — the live read-path wiring (FIX, v0.7). On the targeted
 // retrieval path (`pebbl context --topic <x>`), entries come back in rerank order

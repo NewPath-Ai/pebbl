@@ -4,13 +4,11 @@ const path = require('path');
 const { openDb } = require('./db');
 const { requirePebblDir } = require('./find-pebbl');
 const { ensureProjectFiles, DEFAULT_RUBRIC, DEFAULT_CONFIG } = require('./rubric');
-const { qmdAvailable, qmdCollectionCreate } = require('./qmd');
 
 // The post-commit hook template now lives in ONE place — src/init.js
 // (postCommitHook). `pebbl upgrade` rewrites the hook from that same function so
 // re-init and upgrade can never drift (DRY). It's required lazily inside
-// upgrade() to avoid a require cycle with init.js. Embed bypass + background +
-// per-store lock are documented at the init.js definition (incident 2026-06-18).
+// upgrade() to avoid a require cycle with init.js.
 
 function upgradeAgentsMd(cwd) {
   const agentMd = path.join(cwd, 'AGENTS.md');
@@ -118,15 +116,6 @@ module.exports = function upgrade() {
 
   upgradeAgentsMd(cwd);
   removeLegacyPebblMd(cwd);
-
-  if (qmdAvailable()) {
-    try {
-      qmdCollectionCreate(pebblDir);
-      console.log('QMD collection refreshed');
-    } catch {
-      console.warn('QMD collection refresh failed — run manually if needed');
-    }
-  }
 
   console.log('\npebbl upgrade complete.');
 };

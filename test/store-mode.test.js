@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // P6 — the coexistence fork (storeMode). Pure, read-only COMPLETENESS predicate:
 // 'events' ONLY when events.jsonl is the complete store (legacy-db.sqlite present,
 // or the .events-canonical marker, or events.jsonl is git-tracked); a partial /

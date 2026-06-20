@@ -44,9 +44,9 @@ Entries have a lifecycle. You decide how long they stay:
 | **detail** | Implementation notes, gotchas, research | Compacts when 10+ on same topic |
 | **fleeting** | Session summaries, temporary notes | 30 days, auto-deleted |
 
-### Semantic search
+### Search
 
-Pebbl uses [qmd](https://github.com/tobilu/qmd) for semantic search over your memory. Search by intent, not keywords:
+Pebbl uses SQLite FTS5 full-text search ranked by BM25 over your memory, with synonym expansion so related terms still match. No external tool or model — the only native dependency is `better-sqlite3`:
 ```bash
 pebbl search "how do we store user data?"  # returns schema entries, storage decisions
 pebbl search "caching strategy"            # returns cache pattern, performance targets
@@ -246,7 +246,7 @@ See `AGENTS.md` in your repo for the full protocol.
 
 ### Technical details
 - **Local-first**: no cloud, no sync — `.pebbl/` lives in your git repo
-- **Fast search**: SQLite + semantic indexing via qmd
+- **Fast search**: SQLite FTS5 full-text indexing ranked by BM25
 - **Conflict-aware**: supports `--relates` and `--corrects` to track related and contradicting decisions
 - **Zero overhead**: pebbl logs are auto-captured from git commits (you only type what matters)
 
@@ -299,12 +299,12 @@ pebbl handoff --close           # session detail entries become compaction-eligi
 ├── db.sqlite          # The source of truth (queries here)
 ├── rubric.yml         # Auto-classification rules
 ├── config.yml         # Pebbl settings (compaction threshold, etc.)
-├── manual-logs.md     # Markdown projection (cached, for QMD)
-├── commit-log.md      # Auto-captured git commits (cached, for QMD)
+├── manual-logs.md     # Markdown projection (cached, human-readable)
+├── commit-log.md      # Auto-captured git commits (cached, human-readable)
 └── archive/           # Compacted entries (for reference)
 ```
 
-The SQLite database is the authority. Markdown files are indexed by qmd for semantic search and can be regenerated anytime.
+The SQLite database is the authority. Search runs over an FTS5 index built from it; the markdown files are human-readable projections and can be regenerated anytime.
 
 ## Configuration
 

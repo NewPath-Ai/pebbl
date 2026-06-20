@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -8,57 +7,7 @@ const os = require('os');
 const Database = require('better-sqlite3');
 const { _internal } = require('../src/search');
 
-const { parseQmdResults, dedupeResults, formatResult, stripHandoffPrefix, searchHandoffsSqlite } = _internal;
-
-function qmdBlock(uri, heading, comment) {
-  return [`qmd://${uri}`, 'Title: t', 'Score: 50%', '', `## ${heading}`, comment, ''].join('\n');
-}
-
-describe('search - parseQmdResults', () => {
-  it('parses a log-entry block', () => {
-    const raw = qmdBlock('pebbl/manual-logs.md:5', '2026-05-27T10:00:00.000Z - chose bcrypt for hashing',
-      '<!-- cat:decision topic:auth tier:component source:agent -->');
-    const r = parseQmdResults(raw);
-    assert.strictEqual(r.length, 1);
-    assert.strictEqual(r[0].isHandoff, false);
-    assert.strictEqual(r[0].cat, 'decision');
-    assert.strictEqual(r[0].tier, 'component');
-    assert.strictEqual(r[0].message, 'chose bcrypt for hashing');
-  });
-
-  it('parses a closed handoff item-block', () => {
-    const raw = qmdBlock('pebbl/handoffs.md:7', '2026-05-27T09:58:50.000Z - handoff #8 done: aggression slider live',
-      '<!-- handoff:8 field:done topic:editor status:closed -->');
-    const r = parseQmdResults(raw);
-    assert.strictEqual(r.length, 1);
-    assert.strictEqual(r[0].isHandoff, true);
-    assert.strictEqual(r[0].handoffId, '8');
-    assert.strictEqual(r[0].field, 'done');
-    assert.strictEqual(r[0].topics, 'editor');
-    assert.strictEqual(r[0].status, 'closed');
-  });
-
-  it('parses an open handoff item-block', () => {
-    const raw = qmdBlock('pebbl/handoffs.md:7', '2026-05-27T09:58:50.000Z - handoff #6 todo: ship it',
-      '<!-- handoff:6 field:todo topic:auth status:open -->');
-    const r = parseQmdResults(raw);
-    assert.strictEqual(r[0].status, 'open');
-  });
-
-  it('defaults status to closed when comment omits it (back-compat)', () => {
-    const raw = qmdBlock('pebbl/handoffs.md:7', '2026-05-27T09:58:50.000Z - handoff #1 done: x',
-      '<!-- handoff:1 field:done topic:auth -->');
-    const r = parseQmdResults(raw);
-    assert.strictEqual(r[0].status, 'closed');
-  });
-
-  it('filters by topic when requested', () => {
-    const raw = qmdBlock('pebbl/handoffs.md:7', '2026-05-27T09:58:50.000Z - handoff #8 done: x',
-      '<!-- handoff:8 field:done topic:editor -->');
-    assert.strictEqual(parseQmdResults(raw, null, 'pipeline').length, 0);
-    assert.strictEqual(parseQmdResults(raw, null, 'editor').length, 1);
-  });
-});
+const { dedupeResults, formatResult, stripHandoffPrefix, searchHandoffsSqlite } = _internal;
 
 describe('search - dedupeResults', () => {
   it('suppresses a handoff item that duplicates a log entry', () => {

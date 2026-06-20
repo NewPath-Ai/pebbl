@@ -4,7 +4,6 @@ const path = require('path');
 const { parseArgs, assertCompleteFlags, assertIntegerFlags } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
-const { qmdUpdateDeferred } = require('./qmd');
 const { loadRubric, classifyEntry, ensureProjectFiles } = require('./rubric');
 const { isThinEntry } = require('./detect-thin');
 const { execFileSync } = require('child_process');
@@ -299,14 +298,6 @@ module.exports = function log(args) {
       'UPDATE logs SET valid_to = ?, invalidated_by = ? WHERE id = ? AND valid_to IS NULL'
     ).run(ts, newId, corrects);
   }
-
-  // P4: qmd is OFF the synchronous write path. The 7-9s qmd reindex (~80s with
-  // embeddings) used to run inline here and block every `pebbl log`; in some
-  // environments the qmd subprocess blocks effectively forever. We now kick it
-  // as a DETACHED background job (src/qmd.js qmdUpdateDeferred) that outlives
-  // this process, so the foreground returns after only the ms-scale SQLite fold
-  // + markdown write above. BM25 search tolerates the few-seconds-stale index.
-  qmdUpdateDeferred(pebblDir);
 
   // ADDITIVE event-sourcing path (P0 tracer). On TOP of the SQLite write +
   // markdown projection above (which stay canonical for now), also append

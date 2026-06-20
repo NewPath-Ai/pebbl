@@ -45,12 +45,11 @@ Rules:
   db.sqlite          authoritative store — source of truth
   rubric.yml         auto-classification rules
   config.yml         thresholds, defaults
-  manual-logs.md     markdown projection of logs (qmd-indexed)
-  commit-log.md      auto-captured git commits (qmd-indexed)
+  manual-logs.md     markdown projection of logs (human-readable)
+  commit-log.md      auto-captured git commits (human-readable)
   handoffs.md        materialized handoffs (one block per item)
   narrative.md       project narrative
   archive/           compacted entries
-  qmd/               quote-aware full-text index
   mirror/<machine>/  other machines' synced memory (read-only — the sync job
                      owns it; context, search, and handoff --list show these
                      entries tagged [machine])
@@ -215,8 +214,8 @@ fleeting entries are pruned; foundation entries are always kept.
   rebuild: `pebbl rebuild — force a rebuild of the view from events.jsonl
 
 Re-folds the canonical .pebbl/events.jsonl into the disposable view
-(view.sqlite + the markdown projections) and refreshes the qmd index in
-the background. The view is normally kept current automatically on every
+(view.sqlite + the markdown projections). The FTS5 search index is rebuilt
+lazily from the view on the next read. The view is normally kept current automatically on every
 command, so you rarely need this — reach for it after hand-editing or
 repairing events.jsonl, or to force a refresh in a script. Runs under the
 per-store lock so it can't interleave with a concurrent write.

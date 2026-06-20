@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // `pebbl log --corrects N` must HIDE the superseded entry in events/shared mode
 // exactly as it does in legacy db.sqlite. The fold (src/fold.js) already stamps
 // valid_to on a `correct` event's target; this suite proves the WRITE side now
@@ -36,8 +35,7 @@ function gitInit(cwd) {
   execFileSync('git', ['config', 'user.name', 'Tester'], { cwd });
   execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd });
 }
-// Run the real pebbl CLI. PEBBL_DISABLE_EMBED is inherited from setup.js (the
-// process-wide env), so the post-commit hook never shells out to a live embed.
+// Run the real pebbl CLI.
 function pebbl(cwd, args) {
   return execFileSync('node', [PEBBL_BIN, ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }

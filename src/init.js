@@ -3,7 +3,6 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { openDb } = require('./db');
-const { qmdAvailable, qmdCollectionCreate } = require('./qmd');
 const { DEFAULT_RUBRIC, DEFAULT_CONFIG } = require('./rubric');
 const { detectRemoteVisibility } = require('./privacy-scan');
 // DRY: the positive completeness marker name is owned by store-mode.js (its
@@ -38,36 +37,24 @@ ${AGENT_END}
 
 const AGENT_STANDALONE = `# Agent Guidelines\n${AGENT_SECTION}`;
 
-// post-commit hook. Captures the commit into pebbl memory, then `pebbl
-// log-commit` reindexes for search. Incident 2026-06-18 hardened the embed:
-//   - BYPASS: PEBBL_NO_HOOK / PEBBL_DISABLE_EMBED make log-commit STILL write the
-//     commit-log/db row but skip `qmd update` (the test harness sets it so a burst
-//     of fixture commits fires zero live embeds). Honored inside log-commit, so we
-//     intentionally do NOT early-exit the hook — the row must still be written.
-//   - The reindex log-commit kicks is a DETACHED background job with a
-//     single-flight lock per store, so a commit never blocks on, or fans out, an
-//     embed.
+// post-commit hook. Captures the commit into pebbl memory: `pebbl log-commit`
+// writes the commit + log rows and appends commit-log.md so the commit is
+// searchable.
 //
 // PINNING (same pattern as the P5 hooks below): the hook bakes in the ABSOLUTE
 // path of the bin/pebbl.js that ran `init`, invoked via `node`, so it ALWAYS runs
-// the pebbl that installed it — not whatever `pebbl` is first on $PATH. This is
-// load-bearing for the bypass: a stale GLOBAL `pebbl` on $PATH (one built before
-// this incident, with no PEBBL_DISABLE_EMBED awareness) would otherwise run the
-// old blocking embed and ignore the var entirely, re-triggering the thrash even
-// though the installed code honors it. Falls back to a PATH `pebbl` only if the
-// pinned bin is gone. Keep this template in sync with src/upgrade.js.
+// the pebbl that installed it — not whatever `pebbl` is first on $PATH. Falls back
+// to a PATH `pebbl` only if the pinned bin is gone. Keep this template in sync
+// with src/upgrade.js.
 function postCommitHook(pinnedBin) {
   const pin = String(pinnedBin).replace(/'/g, `'\\''`); // shell-safe single-quote
   return `#!/bin/sh
-# pebbl post-commit: capture the commit + reindex for search.
-# Embed bypass (incident 2026-06-18): set PEBBL_NO_HOOK=1 or PEBBL_DISABLE_EMBED=1
-# to write the commit row but skip the \`qmd update\` embed. The embed itself runs
-# DETACHED in the background (never blocks the commit) with a per-store single-flight lock.
+# pebbl post-commit: capture the commit into pebbl memory.
 HASH=$(git log -1 --pretty=%H)
 MESSAGE=$(git log -1 --pretty=%B)
 FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | tr '\\n' ',')
-# Pin the pebbl that installed this hook so the bypass + background behavior is the
-# INSTALLED code's, not a stale \`pebbl\` first on \$PATH.
+# Pin the pebbl that installed this hook so commit-capture runs the INSTALLED
+# code's log-commit, not a stale \`pebbl\` first on \$PATH.
 PINNED='${pin}'
 if [ -n "$PINNED" ] && [ -f "$PINNED" ]; then
   exec node "$PINNED" log-commit "$HASH" "$MESSAGE" "$FILES"
@@ -444,18 +431,6 @@ function init(argv) {
     } else {
       console.log('AGENTS.md already contains pebbl guidance — run `pebbl upgrade` to refresh');
     }
-  }
-
-  // QMD index
-  if (qmdAvailable()) {
-    try {
-      qmdCollectionCreate(pebblDir);
-      console.log('QMD collection created');
-    } catch {
-      console.warn('QMD collection create failed — you may need to run it manually.');
-    }
-  } else {
-    console.warn('qmd not found — semantic search disabled until you run: npm install -g qmd');
   }
 
   // Create empty narrative.md placeholder

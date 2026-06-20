@@ -201,60 +201,6 @@ function dedupeResults(results) {
   return out;
 }
 
-function parseQmdResults(raw, cat, topic) {
-  const blocks = raw.split('\nqmd://');
-  const results = [];
-
-  for (let i = 0; i < blocks.length; i++) {
-    const block = (i === 0 ? '' : '\n') + blocks[i];
-
-    const handoffMatch = block.match(/<!--\s*handoff:(\d+)\s+field:(\S+)\s+topic:(\S*)(?:\s+status:(\S+))?\s*-->/);
-    const logMatch = block.match(/<!--\s*cat:(\S+)\s+topic:(\S*)\s+tier:(\S+)\s+source:(\S+)\s*-->/);
-
-    if (handoffMatch) {
-      const entryTopics = handoffMatch[3];
-      if (topic) {
-        const topicParts = (entryTopics || '').split(',').map(t => t.trim());
-        if (!topicParts.includes(topic)) continue;
-      }
-      const dateMatch = block.match(/##\s+(\S+)\s+-\s+(.+)/);
-      results.push({
-        isHandoff: true,
-        handoffId: handoffMatch[1],
-        field: handoffMatch[2],
-        topics: entryTopics,
-        status: handoffMatch[4] || 'closed',
-        date: dateMatch ? dateMatch[1].slice(0, 10) : 'unknown',
-        message: dateMatch ? dateMatch[2] : '(unknown)',
-      });
-    } else if (logMatch) {
-      const entryCat = logMatch[1];
-      const entryTopics = logMatch[2];
-      const entryTier = logMatch[3];
-
-      if (cat && entryCat !== cat) continue;
-      if (topic) {
-        const topicParts = (entryTopics || '').split(',').map(t => t.trim());
-        if (!topicParts.includes(topic)) continue;
-      }
-      const dateMatch = block.match(/##\s+(\S+)\s+-\s+(.+)/);
-      results.push({
-        isHandoff: false,
-        tier: entryTier,
-        cat: entryCat,
-        topics: entryTopics,
-        date: dateMatch ? dateMatch[1].slice(0, 10) : 'unknown',
-        message: dateMatch ? dateMatch[2] : (block.split('\n')[1] || '(unknown)'),
-      });
-    } else {
-      const trimmed = block.trim();
-      if (trimmed) results.push({ raw: trimmed, message: '' });
-    }
-  }
-
-  return results;
-}
-
 // SQLite fallback: scan closed-handoff fields for the query and emit matching items.
 function searchHandoffsSqlite(db, query, topic) {
   const terms = queryTerms(query);
@@ -504,4 +450,4 @@ module.exports = function search(args) {
   searchSqlite(pebblDir, query, flags.cat, flags.topic, mirrorResults, sourceResults);
 };
 
-module.exports._internal = { parseQmdResults, dedupeResults, formatResult, stripHandoffPrefix, normalize, queryTerms, matchesAllTerms, searchHandoffsSqlite, searchMirrors, mergeMirror, searchSources, searchSqlite, searchFts5, buildMatchQuery, SYNONYM_GROUPS, SYNONYM_INDEX, renderResults };
+module.exports._internal = { dedupeResults, formatResult, stripHandoffPrefix, normalize, queryTerms, matchesAllTerms, searchHandoffsSqlite, searchMirrors, mergeMirror, searchSources, searchSqlite, searchFts5, buildMatchQuery, SYNONYM_GROUPS, SYNONYM_INDEX, renderResults };

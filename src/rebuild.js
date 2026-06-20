@@ -25,7 +25,6 @@ const { withLock } = require('./lock');
 const { readEvents } = require('./events');
 const { rebuildView } = require('./view');
 const { currentState, writeWatermark } = require('./staleness');
-const { qmdUpdateDeferred } = require('./qmd');
 
 const SENTINEL = '.rebuild-needed';
 
@@ -41,10 +40,6 @@ module.exports = function rebuild() {
     try { fs.unlinkSync(path.join(pebblDir, SENTINEL)); } catch { /* absent, fine */ }
     return events.length;
   });
-
-  // qmd reindex runs in the background so `pebbl rebuild` returns fast and qmd
-  // stays off the synchronous path (P4). A few-seconds-stale BM25 index is fine.
-  qmdUpdateDeferred(pebblDir);
 
   console.log(`pebbl: rebuilt view from ${result} event${result === 1 ? '' : 's'}.`);
 };
