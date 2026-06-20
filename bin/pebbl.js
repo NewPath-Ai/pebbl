@@ -20,6 +20,7 @@ const commands = {
   narrative:    () => require('../src/narrative')(args),
   feedback:     () => require('../src/feedback')(args),
   check:        () => require('../src/check')(args),
+  doctor:       () => require('../src/doctor')(args),
   'scan-commits': () => require('../src/scan-commits')(args),
   'audit-history': () => require('../src/audit-history')(args),
   'privacy-scan': () => require('../src/privacy-scan').cli(args),
