@@ -1,9 +1,8 @@
 'use strict';
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
-const { openReadDb, topicFilter, notCorrected } = require('./db');
+const { openReadDb, topicFilter, notCorrected, fts5Available, buildFtsIndex, FTS_TABLE } = require('./db');
 const { storeMode } = require('./store-mode');
-const { qmdAvailable, qmdQuery } = require('./qmd');
 const { displayEntry } = require('./log');
 const { ensureProjectFiles, loadConfig } = require('./rubric');
 const { splitItems } = require('./handoff');
@@ -23,6 +22,83 @@ function normalize(s) {
 // scattered. An empty/blank query yields [] (callers treat that as "match all").
 function queryTerms(query) {
   return (query || '').toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+// ── curated synonym map (JUSTIFY-NEW) ────────────────────────────────────────
+//
+// There is no synonym source in the repo, so this is the one net-new artifact.
+// It is deliberately TINY and obviously extensible: a flat list of equivalence
+// GROUPS. Each group's words are treated as interchangeable, so a search for any
+// member also matches an entry that contains only another member (e.g. searching
+// "cancel" finds an entry that says "terminate"). Expansion happens BEFORE the
+// FTS5 MATCH as an OR-group per query term (see buildMatchQuery), so it costs
+// nothing on the index side and never touches stored data.
+//
+// Kept intentionally small — these are real, high-value pebbl/engineering pairs,
+// not a thesaurus. Porter stemming already collapses inflections (reject/rejected,
+// deploy/deploys), so this map only needs DISTINCT lemmas, not word forms. Add a
+// group by appending an array; SYNONYM_INDEX is derived from it so there is one
+// source of truth.
+const SYNONYM_GROUPS = [
+  ['cancel', 'terminate', 'abort'],
+  ['deploy', 'ship', 'release'],
+  ['bug', 'defect', 'issue'],
+  ['delete', 'remove'],
+  ['fix', 'patch'],
+];
+
+// term -> [synonyms] (the term itself excluded), built once from the groups so
+// the map above stays the single place to edit. A term in two groups gets the
+// union of both groups' members.
+const SYNONYM_INDEX = (() => {
+  const idx = new Map();
+  for (const group of SYNONYM_GROUPS) {
+    for (const word of group) {
+      const others = group.filter((w) => w !== word);
+      const prev = idx.get(word) || [];
+      for (const o of others) if (!prev.includes(o)) prev.push(o);
+      idx.set(word, prev);
+    }
+  }
+  return idx;
+})();
+
+// FTS5 bareword grammar is picky: a term containing anything outside its token
+// charset (or a bareword that collides with a keyword like AND/OR/NOT/NEAR) is a
+// syntax error. Wrapping each term as a double-quoted FTS5 string makes it a
+// literal — quotes are escaped by doubling per the FTS5 string rules — so an
+// arbitrary user term can never produce a malformed MATCH. A trailing '*' (set by
+// the caller for the last token) is appended OUTSIDE the quotes so it stays a
+// prefix operator rather than a literal asterisk.
+function ftsQuote(term, prefix) {
+  const quoted = '"' + String(term).replace(/"/g, '""') + '"';
+  return prefix ? quoted + ' *' : quoted;
+}
+
+// Build the FTS5 MATCH expression from a query, AND-ing the terms (every term
+// must match, same recall semantics as the LIKE fallback's AND-of-terms) while
+// OR-expanding each term against its curated synonyms. Reuses queryTerms() as
+// the ONE tokenizer so FTS and the fallback agree on what a "term" is.
+//
+//   "cancel deploy"  ->  ("cancel" OR "terminate" OR "abort") AND ("deploy" OR "ship" OR "release")
+//
+// The final token also gets a prefix form ("auth" -> ("auth" OR auth*)) so a
+// partial last word still matches as the user types — phrase/prefix support
+// without a separate code path. Returns '' for a blank query (caller treats that
+// as "no FTS constraint").
+function buildMatchQuery(query) {
+  const terms = queryTerms(query);
+  if (terms.length === 0) return '';
+  return terms
+    .map((term, i) => {
+      const isLast = i === terms.length - 1;
+      const alts = [ftsQuote(term, false)];
+      // Prefix-match the last token so a half-typed word still hits.
+      if (isLast && term.length >= 2) alts.push(ftsQuote(term, true));
+      for (const syn of SYNONYM_INDEX.get(term) || []) alts.push(ftsQuote(syn, false));
+      return alts.length === 1 ? alts[0] : `(${alts.join(' OR ')})`;
+    })
+    .join(' AND ');
 }
 
 // True when every term in `terms` appears (substring) in `text`. AND semantics,
@@ -277,6 +353,13 @@ function searchSqlite(pebblDir, query, cat, topic, mirrorResults, sourceResults)
     ...(sourceResults || []),
   ];
 
+  renderResults(query, results);
+}
+
+// The single result-printing block, shared by the FTS5 path and the LIKE
+// fallback so their output is byte-identical (DRY — one format, not two that
+// can drift). "No results found." on an empty set, else the bracketed block.
+function renderResults(query, results) {
   if (results.length === 0) {
     console.log('No results found.');
     return;
@@ -288,6 +371,83 @@ function searchSqlite(pebblDir, query, cat, topic, mirrorResults, sourceResults)
     console.log();
   }
   console.log('---\n');
+}
+
+// FTS5 + bm25 primary search path (M1). Same CONTRACT and OUTPUT SHAPE as
+// searchSqlite — it reuses queryTerms / searchHandoffsSqlite / dedupeResults /
+// mergeMirror / formatResult / renderResults verbatim and honors the identical
+// filters (tier != 'archived', notCorrected() current-belief, cat, topic, and
+// the mirror + source-doc merge). The ONLY difference is HOW the log rows are
+// selected and ORDERED: a relevance-ranked FTS5 MATCH (porter-stemmed, synonym
+// OR-expanded, phrase/prefix) instead of a substring LIKE scan in insertion
+// order. Handoffs keep the LIKE search (the handoffs table carries no FTS index
+// — scoped to the logs read path per M1), then both streams merge and render
+// together. Throws only on an unexpected SQL error; the caller (search()) wraps
+// the call and degrades to searchSqlite on any throw.
+function searchFts5(pebblDir, query, cat, topic, mirrorResults, sourceResults) {
+  // Same read handle the fallback uses: events-mode -> the folded view.sqlite
+  // (carries the FTS index writeViewSqlite built); legacy-mode -> db.sqlite.
+  const db = openReadDb(pebblDir);
+  // On a writable handle (legacy db.sqlite) ensure the index exists and is
+  // current with logs before querying — db.sqlite's log.js appends don't touch
+  // FTS, so we rebuild it fresh (milliseconds). On a readonly view.sqlite this
+  // is a no-op (db.readonly guard inside buildFtsIndex); its index is already
+  // fresh from the fold. "using fts5" for the search read path is logged here
+  // under PEBBL_DEBUG so the path is observable without noising normal runs.
+  buildFtsIndex(db);
+  if (process.env.PEBBL_DEBUG) console.error('pebbl search: using fts5 (bm25 + porter)');
+
+  const match = buildMatchQuery(query);
+  // A blank query has no MATCH constraint; fall back to the LIKE path which
+  // already degrades a blank query to recent rows (the FTS MATCH grammar has no
+  // "match everything" form, and search() already rejects an empty query).
+  if (!match) return searchSqlite(pebblDir, query, cat, topic, mirrorResults, sourceResults);
+
+  // Join the external-content FTS table back to `logs` by rowid==id to read the
+  // display columns. Filters mirror searchSqlite exactly. ORDER BY bm25(fts), id:
+  // bm25 ascending is best-relevance-first (FTS5's score is more-negative=better,
+  // so ascending = most relevant first); `id` is the deterministic tie-break that
+  // makes equal-score rows order reproducibly across git-synced machines.
+  let sql =
+    `SELECT l.timestamp, l.source, l.category, l.tier, l.message, l.topics ` +
+    `FROM ${FTS_TABLE} f JOIN logs l ON l.id = f.rowid ` +
+    `WHERE f.${FTS_TABLE} MATCH ? AND l.tier != 'archived' AND l.${notCorrected()}`;
+  const params = [match];
+
+  if (cat) {
+    sql += ' AND l.category = ?';
+    params.push(cat);
+  }
+  if (topic) {
+    // topicFilter targets the bare `topics` column; qualify it to l.topics for
+    // the join. The clause is a fixed template (no other column named topics in
+    // scope here), so a scoped string replace is safe.
+    const filter = topicFilter(topic);
+    sql += ' ' + filter.clause.replace(/\btopics\b/g, 'l.topics');
+    params.push(...filter.params);
+  }
+
+  sql += ` ORDER BY bm25(f.${FTS_TABLE}), l.id LIMIT 20`;
+  const rows = db.prepare(sql).all(...params);
+
+  const logResults = rows.map(row => ({
+    isHandoff: false,
+    tier: row.tier,
+    cat: row.category,
+    topics: row.topics,
+    date: (row.timestamp || '').slice(0, 10),
+    message: row.message,
+  }));
+
+  // Handoffs reuse the LIKE search (no FTS on that table — M1 scope); same call
+  // searchSqlite makes, so handoff hits are identical between the two paths.
+  const handoffResults = searchHandoffsSqlite(db, query, topic);
+  const results = [
+    ...mergeMirror(dedupeResults([...logResults, ...handoffResults]), mirrorResults || []),
+    ...(sourceResults || []),
+  ];
+
+  renderResults(query, results);
 }
 
 module.exports = function search(args) {
@@ -302,15 +462,13 @@ module.exports = function search(args) {
   const pebblDir = requirePebblDir();
   ensureProjectFiles(pebblDir);
 
-  // Wire 2 — reads-from-fold for BOTH search paths. The qmd path below searches
-  // the MARKDOWN files (manual-logs.md / handoffs.md), which the fold also
-  // regenerates from events.jsonl; but unlike the sqlite path it never opens a
-  // db handle, so openDb's lazy fold never runs for it. Trigger the fold here in
-  // events-mode so a just-pulled/merged events.jsonl is materialized into BOTH
-  // the markdown (for qmd) AND view.sqlite (for the sqlite fallback) before
-  // either reads. Cheap when already fresh (a fingerprint compare, no fold) and
-  // best-effort — a fold failure must never break search (db.sqlite/markdown are
-  // still there as the canonical read).
+  // Wire 2 — reads-from-fold. In events-mode the read path serves the folded
+  // view.sqlite, so a just-pulled/merged events.jsonl must be materialized first.
+  // ensureFresh folds events.jsonl -> view.sqlite (which now ALSO builds the FTS5
+  // index in the same writeViewSqlite seam), so a freshly-pulled store is both
+  // searchable and FTS-indexed before we open a handle. Cheap when already fresh
+  // (a fingerprint compare, no fold) and best-effort — a fold failure must never
+  // break search (the canonical db.sqlite is still there to read).
   if (storeMode(pebblDir) === 'events') {
     try { require('./staleness').ensureFresh(pebblDir); } catch { /* never break search */ }
   }
@@ -320,32 +478,30 @@ module.exports = function search(args) {
   const config = loadConfig(pebblDir) || {};
   const sourceResults = searchSources(pebblDir, query, config);
 
-  if (qmdAvailable()) {
-    const raw = qmdQuery(pebblDir, query);
+  // Primary path = FTS5 + bm25 (relevance-ranked, porter-stemmed, synonym/prefix);
+  // graceful FALLBACK = the LIKE substring scan when FTS5 is unavailable. The
+  // capability probe opens a read handle and asks fts5Available(db): FTS5 must be
+  // compiled in AND either the index already exists (a folded view.sqlite) or we
+  // can build it on this handle (writable legacy db.sqlite). This replaces the old
+  // probe-the-external-tool branch — qmd is gone from the search READ path.
+  // Any throw from the FTS path degrades to the identical-shape LIKE search, so a
+  // store that somehow can't be FTS-indexed still returns results.
+  let useFts5 = false;
+  try {
+    const probe = openReadDb(pebblDir);
+    try { useFts5 = fts5Available(probe); } finally { probe.close(); }
+  } catch { useFts5 = false; }
 
-    const all = raw.trim()
-      ? dedupeResults(parseQmdResults(raw, flags.cat, flags.topic))
-      : [];
-    // Archived (compacted) history is hidden by default and only restored,
-    // ranked lowest, under --include-archive — recoverability without re-bloat.
-    const local = all.filter(r => r.tier !== 'archived');
-    const archived = flags['include-archive'] ? all.filter(r => r.tier === 'archived') : [];
-    const results = [...mergeMirror(local, mirrorResults), ...sourceResults, ...archived];
-
-    if (results.length === 0) {
-      console.log('No results found.');
+  if (useFts5) {
+    try {
+      searchFts5(pebblDir, query, flags.cat, flags.topic, mirrorResults, sourceResults);
       return;
+    } catch {
+      // FTS path failed unexpectedly — fall through to the LIKE search so the
+      // command still returns results (graceful degradation, same output shape).
     }
-
-    console.log(`\n--- SEARCH: ${query} ---`);
-    for (const r of results) {
-      console.log(r.raw || formatResult(r));
-      console.log();
-    }
-    console.log('---\n');
-  } else {
-    searchSqlite(pebblDir, query, flags.cat, flags.topic, mirrorResults, sourceResults);
   }
+  searchSqlite(pebblDir, query, flags.cat, flags.topic, mirrorResults, sourceResults);
 };
 
-module.exports._internal = { parseQmdResults, dedupeResults, formatResult, stripHandoffPrefix, normalize, queryTerms, matchesAllTerms, searchHandoffsSqlite, searchMirrors, mergeMirror, searchSources, searchSqlite };
+module.exports._internal = { parseQmdResults, dedupeResults, formatResult, stripHandoffPrefix, normalize, queryTerms, matchesAllTerms, searchHandoffsSqlite, searchMirrors, mergeMirror, searchSources, searchSqlite, searchFts5, buildMatchQuery, SYNONYM_GROUPS, SYNONYM_INDEX, renderResults };

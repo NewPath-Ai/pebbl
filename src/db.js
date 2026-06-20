@@ -137,6 +137,103 @@ function openReadDb(pebblDir) {
 
 module.exports = { openDb, openReadDb };
 
+// ── FTS5 full-text search index (M1) ─────────────────────────────────────────
+//
+// pebbl search rides SQLite's built-in FTS5 + bm25() (compiled into the bundled
+// better-sqlite3 — PRAGMA compile_options shows ENABLE_FTS5; no extension load,
+// no new dependency). The index is an EXTERNAL-CONTENT virtual table over the
+// `logs` table (content='logs', content_rowid='id'): FTS5 stores only the
+// inverted index, not a second copy of the message text — the text stays in
+// `logs`, and a query joins back by rowid==logs.id. The table lives INSIDE the
+// same SQLite file the read path opens (view.sqlite in events-mode, db.sqlite in
+// legacy-mode), so it inherits view.sqlite/db.sqlite's DERIVED/DISPOSABLE status
+// and its existing .gitignore line — there is NO new file to ignore.
+//
+// The `porter` tokenizer gives stemming (a query for `reject` matches a stored
+// `rejected`); bm25() is FTS5's default relevance rank. The index is rebuilt
+// from `logs` content (`INSERT INTO fts(fts) VALUES('rebuild')`) rather than
+// kept in sync by triggers: it is built in the SAME seam that writes the view
+// rows (view.js writeViewSqlite), and refreshed on the legacy read path before a
+// search, so it is always derivable from the canonical rows and reproduces the
+// same ranking on any machine. Rebuild is milliseconds even at thousands of rows
+// (a curated pebbl store is far smaller).
+const FTS_TABLE = 'logs_fts';
+
+// Is FTS5 compiled into this SQLite build? A pure capability probe — does NOT
+// require the index table to exist. Cheap (reads the cached compile options).
+// Best-effort: any failure (older/odd build) is treated as "no FTS5" so the
+// caller degrades to the LIKE fallback rather than throwing.
+function fts5Compiled(db) {
+  try {
+    return db
+      .prepare('PRAGMA compile_options')
+      .all()
+      .some((r) => r.compile_options === 'ENABLE_FTS5');
+  } catch {
+    return false;
+  }
+}
+
+// Does the FTS index table exist in this database? (sqlite_master lists the
+// virtual table by name.) Used to decide whether a readonly view.sqlite already
+// carries the index writeViewSqlite built, vs needing a lazy build.
+function ftsTableExists(db) {
+  try {
+    return !!db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+      .get(FTS_TABLE);
+  } catch {
+    return false;
+  }
+}
+
+// Create (if absent) the external-content FTS5 table over `logs` and (re)build
+// its content from the current `logs` rows. Idempotent and cheap. Requires a
+// WRITABLE handle (the legacy db.sqlite read path and the view writer both have
+// one); a readonly view.sqlite never calls this — writeViewSqlite already built
+// its index. Returns true on success, false if FTS5 is unavailable or the build
+// failed (caller then falls back to the LIKE search).
+function buildFtsIndex(db) {
+  if (db.readonly) return false; // can't build on a readonly view handle
+  if (!fts5Compiled(db)) return false;
+  try {
+    // External-content table: indexes logs.message keyed by logs.id, storing no
+    // duplicate text. `porter` => stemming. "using fts5" appears here as the
+    // single source of the virtual-table DDL.
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS ${FTS_TABLE} ` +
+        `USING fts5(message, content='logs', content_rowid='id', tokenize='porter')`
+    );
+    // Rebuild from content: drops any stale postings and reindexes every current
+    // logs row. Deterministic — same rows in, same index out — which is what
+    // makes `ORDER BY bm25(fts), id` reproduce across git-synced machines.
+    db.exec(`INSERT INTO ${FTS_TABLE}(${FTS_TABLE}) VALUES('rebuild')`);
+    return true;
+  } catch {
+    // A virtual-table create/rebuild failure must never break search; the caller
+    // degrades to the LIKE fallback.
+    return false;
+  }
+}
+
+// Capability probe for the SEARCH READ PATH: is FTS5 usable against `db` right
+// now? True when FTS5 is compiled AND either the index table is already present
+// (a freshly-folded view.sqlite) or we can build it on this writable handle
+// (legacy db.sqlite). Used at search.js's branch in place of the old
+// qmdAvailable() check. On a readonly handle with no table it returns false, so
+// search degrades to the LIKE fallback instead of throwing.
+function fts5Available(db) {
+  if (!fts5Compiled(db)) return false;
+  if (ftsTableExists(db)) return true;
+  return !db.readonly; // writable -> searchFts5 will build it on demand
+}
+
+module.exports.FTS_TABLE = FTS_TABLE;
+module.exports.fts5Compiled = fts5Compiled;
+module.exports.ftsTableExists = ftsTableExists;
+module.exports.buildFtsIndex = buildFtsIndex;
+module.exports.fts5Available = fts5Available;
+
 function topicFilter(topic) {
   return {
     clause: "AND (',' || topics || ',' LIKE ? OR topics = ? OR topics LIKE ? || ',' OR topics LIKE ',' || ?)",
