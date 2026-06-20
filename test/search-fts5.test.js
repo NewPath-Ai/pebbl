@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // M1 — SQLite FTS5 + bm25 search. Covers the three behaviors the task names:
 //   (1) the FTS5 ranked + porter-stemmed primary path,
 //   (2) curated synonym OR-expansion before MATCH,

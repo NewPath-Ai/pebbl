@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 //
 // Shared mode — the two wires that make multiplayer pebbl memory real (the
 // 2026-06-18 event-sourcing cutover shipped the multiplayer-CAPABLE codebase
@@ -38,8 +37,7 @@ after(() => {
 });
 
 // Run a shell command in `cwd`, inheriting env + any overrides. Throws on a
-// non-zero exit (so a test fails loudly if a setup step breaks). PEBBL_DISABLE_EMBED
-// is already process-wide (test/setup.js) and inherited by the child + the git hook.
+// non-zero exit (so a test fails loudly if a setup step breaks).
 function sh(cwd, cmd, env) {
   return execFileSync('bash', ['-c', cmd], {
     cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],

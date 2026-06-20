@@ -4,7 +4,6 @@ const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
-const { qmdUpdate } = require('./qmd');
 const { ensureProjectFiles } = require('./rubric');
 const { displayEntry } = require('./log');
 const { mirrorHandoffs, stripHandoffPrefix } = require('./mirror');
@@ -134,9 +133,8 @@ module.exports = function handoff(args) {
     }
 
     // C. Re-materialize handoffs.md at item granularity so each done/todo/
-    // blocked item is its own searchable block, then refresh the index.
+    // blocked item is its own searchable block.
     materializeHandoffsMd(pebblDir, db);
-    qmdUpdate(pebblDir);
 
     // D. Display result
     console.log(`Handoff #${row.id} closed.`);
@@ -203,7 +201,6 @@ module.exports = function handoff(args) {
 
   // Re-materialize so the new (open) handoff is searchable immediately.
   materializeHandoffsMd(pebblDir, db);
-  qmdUpdate(pebblDir);
 
   // Display
   console.log(`\n── Handoff #${result.lastInsertRowid} created ──`);

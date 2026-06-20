@@ -219,9 +219,9 @@ function buildFtsIndex(db) {
 // Capability probe for the SEARCH READ PATH: is FTS5 usable against `db` right
 // now? True when FTS5 is compiled AND either the index table is already present
 // (a freshly-folded view.sqlite) or we can build it on this writable handle
-// (legacy db.sqlite). Used at search.js's branch in place of the old
-// qmdAvailable() check. On a readonly handle with no table it returns false, so
-// search degrades to the LIKE fallback instead of throwing.
+// (legacy db.sqlite). Used at search.js's branch to gate the FTS read path. On
+// a readonly handle with no table it returns false, so search degrades to the
+// LIKE fallback instead of throwing.
 function fts5Available(db) {
   if (!fts5Compiled(db)) return false;
   if (ftsTableExists(db)) return true;

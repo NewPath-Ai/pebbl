@@ -116,9 +116,9 @@ ls /Users/ashley/Documents/pebbl-eval/bin/ 2>/dev/null || ls /Users/ashley/Docum
 # Add a test note with formatting, then show it
 # PASS: headings, bold, lists render with formatting/color. FAIL: raw markdown dumped.
 
-# TEST 1.8: Is QMD integrated for search?
-grep -r "qmd\|@tobilu" /Users/ashley/Documents/pebbl-eval/src/ /Users/ashley/Documents/pebbl-eval/*.js 2>/dev/null
-# PASS: QMD referenced in search code. FAIL: no QMD integration.
+# TEST 1.8: Is SQLite FTS5 integrated for search?
+grep -rE "fts5Available|searchFts5|buildFtsIndex" /Users/ashley/Documents/pebbl-eval/src/ /Users/ashley/Documents/pebbl-eval/*.js 2>/dev/null
+# PASS: FTS5 search referenced in search code. FAIL: no FTS5 integration.
 
 # FULL DUMP (for review):
 sqlite3 .pebbl/db.sqlite "SELECT id, category, tier, source, topics, substr(message,1,100) FROM logs ORDER BY id;"
@@ -294,7 +294,7 @@ After all phases, produce a summary table:
 | 1.5  | Decisions logged as decisions         |        |              |
 | 1.6  | App actually built                    |        |              |
 | 1.7  | Markdown viewer renders formatted     |        |              |
-| 1.8  | QMD integrated for search             |        |              |
+| 1.8  | FTS5 integrated for search            |        |              |
 | 2.1  | Phase 2 follows Phase 1 patterns      |        |              |
 | 2.2  | New entries added in Phase 2          |        |              |
 | 2.3  | Two session summaries exist           |        |              |

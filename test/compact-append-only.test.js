@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // P3 — compaction is append-only. These tests REPLACE the deleted
 // archiveEntries / archive.md assertions: instead of asserting the destructive
 // transaction archived rows before deleting them, they assert the inversion —

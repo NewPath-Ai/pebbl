@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // P4 — lazy staleness on the read path: a pure append to events.jsonl is folded
 // into the view on the next read with NO manual rebuild (tail), a changed prefix
 // forces a full replay (full), an unchanged store does zero fold work (fresh).

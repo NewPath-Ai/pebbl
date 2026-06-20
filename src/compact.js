@@ -5,7 +5,6 @@ const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb, notCorrected } = require('./db');
 const { loadConfig, ensureProjectFiles } = require('./rubric');
-const { qmdUpdate } = require('./qmd');
 const {
   readEvents,
   foldFull,
@@ -373,8 +372,6 @@ function executeMode(db, pebblDir, config, resolveRaw) {
   appendEventBatch(pebblDir, events, () => {
     rebuildReadModelFromEvents(pebblDir);
   });
-
-  qmdUpdate(pebblDir);
 
   const supersedeCount = events.filter(e => e.type === 'supersede').length;
   const resolveCount = events.filter(e => e.type === 'resolve').length;

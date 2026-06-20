@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 
 // recordAccess — the usage-signal WRITE (db.js), gated to INTENTIONAL lookups
 // (FIX 1). These tests prove:

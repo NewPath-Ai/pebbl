@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 //
 // storeMode() as a COMPLETENESS predicate (the reads-from-fold safety wire).
 //
@@ -65,7 +64,7 @@ function sharePebbl(dir) {
 }
 function pebbl(cwd, args, env) {
   return execFileSync('node', [BIN, ...args], {
-    cwd, encoding: 'utf8', env: { ...process.env, PEBBL_DISABLE_EMBED: '1', ...(env || {}) },
+    cwd, encoding: 'utf8', env: { ...process.env, ...(env || {}) },
   });
 }
 

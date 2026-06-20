@@ -72,15 +72,13 @@ Everything lives in `.pebbl/db.sqlite`. Entries, handoffs, topics, relations. If
 
 ### Markdown files are projections
 
-The markdown files in `.pebbl/` (`manual-logs.md`, `commit-log.md`, `handoffs.md`) are derived. Pebbl regenerates them on writes. They exist for two reasons: humans can read them directly in an editor, and the qmd semantic-search tool indexes markdown, not SQLite. The projection pattern means SQL stays the contract and markdown stays the surface.
+The markdown files in `.pebbl/` (`manual-logs.md`, `commit-log.md`, `handoffs.md`) are derived. Pebbl regenerates them on writes. They exist so humans can read memory directly in an editor. The projection pattern means SQL stays the contract and markdown stays the surface.
 
 Deleting a projection is safe. It comes back the next time pebbl writes.
 
-### qmd handles semantic search
+### SQLite FTS5 handles search
 
-Pebbl shells out to [qmd](https://github.com/tobilu/qmd), a separate tool that builds a vector index over markdown files. When you run `pebbl search "caching strategy"`, qmd returns the semantically relevant chunks; pebbl then enriches them with database metadata (category, tier, IDs). If qmd isn't installed, pebbl falls back to keyword search.
-
-This is why pebbl bothers materializing markdown projections of SQLite rows: qmd needs them.
+Search runs entirely inside SQLite. Pebbl builds an FTS5 full-text index over the stored entries and ranks matches with BM25, so `pebbl search "caching strategy"` returns the relevant entries enriched with database metadata (category, tier, IDs). There's no external tool, binary, or model — the only native dependency is `better-sqlite3`. If FTS5 isn't available on the SQLite build, pebbl falls back to a LIKE keyword scan.
 
 ### A git hook captures commits
 
@@ -100,7 +98,7 @@ A handoff is a row in the `handoffs` table with five fields: summary, done, todo
 
 Closing does three things:
 
-1. Materializes the handoff into `handoffs.md`. Each `;`-separated item becomes its own markdown block, so qmd can find individual items via search, not just the handoff as a whole.
+1. Materializes the handoff into `handoffs.md`. Each `;`-separated item becomes its own markdown block, so search can find individual items, not just the handoff as a whole.
 2. Marks session detail entries as compaction-eligible. The entries logged between the previous handoff close and this one form a "session" by inference; once the handoff closes, those entries are fair game for the next compaction pass.
 3. Removes the handoff from `pebbl context`'s open-handoff slot.
 
@@ -125,7 +123,7 @@ The narrative is one paragraph describing what the project is. It's stored in `.
 Set it once:
 
 ```bash
-pebbl narrative "Pebbl is a local CLI memory tool for AI agents working on codebases. SQLite-backed, qmd-indexed, with a git hook for commit capture."
+pebbl narrative "Pebbl is a local CLI memory tool for AI agents working on codebases. SQLite-backed, FTS5/BM25 search, with a git hook for commit capture."
 ```
 
 Pebbl warns when the narrative is older than several foundation decisions, since that suggests the project has evolved past its description.

@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // P0 tracer acceptance tests. These ARE the proof that an append-only
 // events.jsonl merges cleanly under git and folds deterministically — they
 // are not optional. All four design acceptance scenarios live here:

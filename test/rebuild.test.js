@@ -1,14 +1,9 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
-// P4 — rebuild triggers, qmd off the hot path, and the `pebbl rebuild` command
-// under the per-store lock.
+// P4 — rebuild triggers and the `pebbl rebuild` command under the per-store lock.
 //
-// Determinism note: the qmd reindex is now a DETACHED background job, so we
-// NEVER assert "the embed finished" (that would be a flaky sleep race). We
-// assert the FOREGROUND contract instead: qmdUpdateDeferred returns a scheduled
-// pid (or null when qmd is absent) without waiting, and the rebuild round-trips
-// view rows. The lock test holds the real P0 lock and asserts rebuild waits
-// then succeeds — no timing guess, the lock is released deterministically.
+// Determinism note: the rebuild round-trips view rows. The lock test holds the
+// real P0 lock and asserts rebuild waits then succeeds — no timing guess, the
+// lock is released deterministically.
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
@@ -19,7 +14,6 @@ const { execFileSync } = require('child_process');
 const Database = require('better-sqlite3');
 
 const PEBBL_BIN = path.join(__dirname, '..', 'bin', 'pebbl.js');
-const { qmdUpdateDeferred, qmdAvailable } = require('../src/qmd');
 const { withLock } = require('../src/lock');
 
 function makeStore() {
@@ -72,52 +66,6 @@ describe('P4 hooks: init installs executable post-merge + post-checkout', () => 
       // The hook references the sentinel and does NOT invoke a fold/rebuild.
       assert.match(body, /\.rebuild-needed/, 'hook touches the sentinel');
       assert.doesNotMatch(body, /pebbl rebuild|rebuildView|node /, 'hook must not run the fold inline');
-    } finally {
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('P4 deferred qmd: off the synchronous path', () => {
-  it('log no longer calls qmdUpdate synchronously (only the deferred entry point)', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'log.js'), 'utf8');
-    // No line-leading synchronous qmdUpdate( call (the inline reindex is gone).
-    assert.doesNotMatch(src, /^\s*qmdUpdate\(/m, 'log.js must not call qmdUpdate() inline');
-    assert.match(src, /qmdUpdateDeferred\(/, 'log.js uses the deferred entry point');
-  });
-
-  it('qmdUpdateDeferred returns WITHOUT waiting for the reindex (scheduled, not finished)', () => {
-    const repo = makeStore();
-    try {
-      const pebblDir = path.join(repo, '.pebbl');
-      const t0 = Date.now();
-      const pid = qmdUpdateDeferred(pebblDir);
-      const elapsed = Date.now() - t0;
-      // The whole point of P4: the call returns in milliseconds, never the
-      // 7-9s (~80s) reindex. We assert the foreground is fast and a job was
-      // SCHEDULED (a pid) when qmd is installed, or skipped (null) when absent —
-      // never that the embed itself completed.
-      assert.ok(elapsed < 2000, `deferred qmd must return fast, took ${elapsed}ms`);
-      if (qmdAvailable()) {
-        assert.equal(typeof pid, 'number', 'a background reindex pid was scheduled');
-      } else {
-        assert.equal(pid, null, 'no qmd installed -> nothing scheduled');
-      }
-    } finally {
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it('pebbl log returns fast (does not block on the qmd reindex)', () => {
-    const repo = makeStore();
-    try {
-      const t0 = Date.now();
-      pebbl(repo, ['log', 'fast because deferred qmd', '--cat', 'decision', '--topic', 'perf']);
-      const elapsed = Date.now() - t0;
-      // Inline qmd made this 7-9s+ (and blocked indefinitely in some envs). A
-      // generous ceiling keeps the assert deterministic (process spawn cost)
-      // while still failing loudly if qmd ever lands back on the hot path.
-      assert.ok(elapsed < 6000, `pebbl log should not block on qmd, took ${elapsed}ms`);
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }

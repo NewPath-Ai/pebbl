@@ -1,5 +1,4 @@
 'use strict';
-require('./setup'); // incident 2026-06-18: bypass live qmd embeds in tests
 // P2 — migrator tests. We seed a real db.sqlite via the canonical openDb (so
 // the v0.5 schema + bitemporal columns + the migrate ladder all apply), insert
 // controlled logs / commits / handoffs with known FK refs, then exercise:
@@ -430,7 +429,7 @@ function runCliCapture(repo, args) {
 function makeRealCommit(repo, name, content) {
   fs.writeFileSync(path.join(repo, name), content);
   execFileSync('git', ['add', name], { cwd: repo });
-  execFileSync('git', ['commit', '-q', '-m', `add ${name}`], { cwd: repo, env: { ...process.env, PEBBL_DISABLE_EMBED: '1' } });
+  execFileSync('git', ['commit', '-q', '-m', `add ${name}`], { cwd: repo });
   return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
 }
 
