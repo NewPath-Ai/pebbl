@@ -3,6 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
+// Projection-boundary secret mask: narrative.md is committed + gate-scanned.
+// The original narrative text lives in the event log (a narrative-set event)
+// untouched; only this rendered file is sanitized.
+const { redact } = require('./privacy-scan');
 
 function getNarrativePath(pebblDir) {
   return path.join(pebblDir, 'narrative.md');
@@ -20,7 +24,7 @@ function writeNarrative(pebblDir, text, refs) {
   const p = getNarrativePath(pebblDir);
   const ts = new Date().toISOString();
   const refsLine = refs && refs.length > 0 ? `<!-- refs: ${refs.join(',')} -->\n` : '';
-  const content = `# Project Narrative\n\n${text.trim()}\n\n${refsLine}<!-- updated: ${ts} -->\n`;
+  const content = `# Project Narrative\n\n${redact(text.trim())}\n\n${refsLine}<!-- updated: ${ts} -->\n`;
   fs.writeFileSync(p, content);
 }
 

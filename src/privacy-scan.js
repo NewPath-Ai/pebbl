@@ -112,6 +112,18 @@ function findCredPaths(text) {
 }
 
 // ── token shapes (additive high-confidence secret shapes) ────────────────────
+// The `assignment` shape MUST stay shape-compatible with the factory promote
+// gate's SECRET_RE (sw-factory/droplet/promote-main.sh, the `(password|secret|
+// api[_-]?key|token)[:=]value` alternatives). That gate blocks a staging->main
+// promote when a committed .md quotes one of these, even a known-fake fixture
+// value; the redact() projection filter below uses THIS pattern to mask the
+// value at render time so committed pebbl memory stops tripping it. Keep the
+// keyword list + length thresholds (>=20 unquoted, >=12 quoted) in sync with
+// SECRET_RE — if the gate's keywords change, change them here too, in lockstep,
+// so the forward gate and the projection mask never disagree (DRY: one shape).
+// The value is captured in group 1 (or group 2 for the quoted form) so redact()
+// can mask only the value and keep the `key=` prefix readable.
+const ASSIGNMENT_KEYWORDS = 'password|secret|api[_-]?key|token|passwd|access[_-]?token';
 const TOKEN_PATTERNS = [
   { name: 'anthropic-oauth', re: /\bsk-ant-[a-z0-9-]{8,}/i },
   { name: 'anthropic-api', re: /\bsk-ant-api[0-9]{2}-[a-z0-9_-]{8,}/i },
@@ -120,13 +132,86 @@ const TOKEN_PATTERNS = [
   { name: 'github-token', re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/ },
   { name: 'slack-token', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}/ },
   { name: 'private-key-block', re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
+  // assignment shape, gate-compatible. Quoted form first (the value can hold
+  // spaces/specials inside the quotes); group 1 is the quoted value, group 2 the
+  // bare value. Mirrors SECRET_RE's two assignment alternatives.
+  { name: 'assignment-quoted', re: new RegExp(`(?:${ASSIGNMENT_KEYWORDS})["']?\\s*[:=]\\s*["']([^"']{12,})["']`, 'i'), valueGroup: 1 },
+  { name: 'assignment-bare', re: new RegExp(`(?:${ASSIGNMENT_KEYWORDS})\\s*[:=]\\s*([A-Za-z0-9+/_=-]{20,})`, 'i'), valueGroup: 1 },
 ];
 
 function findTokens(text) {
   const out = [];
-  for (const { name, re } of TOKEN_PATTERNS) {
+  for (const { name, re, valueGroup } of TOKEN_PATTERNS) {
     const m = re.exec(text);
-    if (m) out.push({ shape: name, match: m[0], index: m.index });
+    if (!m) continue;
+    const hit = { shape: name, match: m[0], index: m.index };
+    // For the assignment shapes, record the absolute span of just the VALUE
+    // (the captured group) so redact() can mask the secret while keeping the
+    // `key=` prefix. The whole-match shapes (token formats) have no group; they
+    // are masked entirely.
+    if (valueGroup && m[valueGroup] != null) {
+      const valueStart = m.index + m[0].indexOf(m[valueGroup]);
+      hit.valueStart = valueStart;
+      hit.valueEnd = valueStart + m[valueGroup].length;
+    }
+    out.push(hit);
+  }
+  return out;
+}
+
+// ── projection redaction (the db -> .md render boundary) ─────────────────────
+// REDACTED is the placeholder the projection writes in place of a secret SHAPE.
+// It is chosen so it can NEVER itself re-trip a scan: it has no `=`/`:` after a
+// keyword, no 20-char run, and matches none of the token formats — so a
+// re-projection of an already-masked file stays masked (idempotent) and the
+// promote gate sees nothing secret-shaped. Do not change it to something that
+// embeds an `=value` or a long alnum run.
+const REDACTED = '<redacted>';
+
+// Mask every TOKEN-class secret shape in `text` (the same shapes findTokens
+// detects, which include the gate-compatible `key=value` assignment) and return
+// the sanitized string. ONLY the token class is masked — this is the leak class
+// the factory promote gate blocks on, and it's the class with no legitimate
+// place in a human-readable memory projection. Network IPs, cred paths and
+// denylisted names are deliberately NOT touched here: those are handled by the
+// pre-commit/pre-push gate + audit-history (an IP/path is often load-bearing
+// context an author wrote on purpose), and silently rewriting them would change
+// the meaning of committed memory. This filter exists so a quoted FAKE fixture
+// key in a note can't false-block a promote.
+//
+// Determinism: the same input always yields the same output (pure string op, no
+// clock/random), so re-projecting the same DB rows produces byte-identical .md
+// (Acceptance #4). Applied PER LINE so a hit's index/value-span stays valid, and
+// looped until a line is clean so multiple secrets on one line are all masked.
+function redact(text) {
+  if (text == null) return text;
+  const str = String(text);
+  if (str.indexOf('\n') === -1) return redactLine(str);
+  return str.split('\n').map(redactLine).join('\n');
+}
+
+function redactLine(line) {
+  let out = line;
+  // findTokens reports at most one hit per pattern and several patterns can
+  // match overlapping spans, so mask exactly ONE hit per pass (the right-most,
+  // so any other hit's index stays valid is moot — we re-scan anyway) and loop.
+  // REDACTED never re-matches a token shape, so each pass removes at least one
+  // shape and this terminates well before the guard. The guard only caps a
+  // pathological input.
+  for (let guard = 0; guard < 256; guard++) {
+    const hits = findTokens(out);
+    if (hits.length === 0) break;
+    // Pick the hit nearest the end of the line so masking can't invalidate an
+    // earlier-starting overlapping hit before we get to it on the next pass.
+    let h = hits[0];
+    for (const c of hits) if (c.index > h.index) h = c;
+    if (h.valueStart != null && h.valueEnd != null) {
+      // assignment shape: mask only the VALUE, keep `key=` readable.
+      out = out.slice(0, h.valueStart) + REDACTED + out.slice(h.valueEnd);
+    } else {
+      // whole-match token shape (sk-…, AKIA…, gh*_…): mask the entire token.
+      out = out.slice(0, h.index) + REDACTED + out.slice(h.index + h.match.length);
+    }
   }
   return out;
 }
@@ -472,6 +557,8 @@ function cli(args) {
 module.exports = {
   scan,
   scanFiles,
+  redact,
+  REDACTED,
   cli,
   loadDenylist,
   detectRemoteVisibility,
@@ -479,6 +566,9 @@ module.exports = {
   scanText: scan,
   _internal: {
     scan,
+    redact,
+    redactLine,
+    REDACTED,
     findPublicIps,
     findCredPaths,
     findTokens,
