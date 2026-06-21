@@ -4,6 +4,9 @@ const path = require('path');
 const { findPebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
 const { loadRubric, classifyEntry } = require('./rubric');
+// Projection-boundary secret mask: commit-log.md is committed + gate-scanned;
+// the DB (commits/logs tables below) keeps the original commit message.
+const { redact } = require('./privacy-scan');
 
 module.exports = function logCommit(hash, message, files) {
   try {
@@ -20,7 +23,7 @@ module.exports = function logCommit(hash, message, files) {
     const category = classified ? classified.category : 'uncategorized';
     const tier = 'fleeting';
 
-    const md = `## ${ts} - ${shortHash}: ${msg}\n<!-- cat:${category} topic: tier:${tier} source:hook -->\n\nFiles: ${fileList || '(none)'}\n\n`;
+    const md = `## ${ts} - ${shortHash}: ${redact(msg)}\n<!-- cat:${category} topic: tier:${tier} source:hook -->\n\nFiles: ${fileList || '(none)'}\n\n`;
     fs.appendFileSync(path.join(pebblDir, 'commit-log.md'), md);
 
     const db = openDb(pebblDir);

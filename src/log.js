@@ -8,7 +8,7 @@ const { loadRubric, classifyEntry, ensureProjectFiles } = require('./rubric');
 const { isThinEntry } = require('./detect-thin');
 const { execFileSync } = require('child_process');
 const { appendLogEvent, appendCorrectLogEvent } = require('./events');
-const { detectRemoteVisibility } = require('./privacy-scan');
+const { detectRemoteVisibility, redact } = require('./privacy-scan');
 const { importanceForTier } = require('./rank');
 
 // P5 — foundation private-by-default (design Q3=B). Decide whether THIS entry's
@@ -275,8 +275,11 @@ module.exports = function log(args) {
     }
   }
 
+  // Mask secret-shapes only in the COMMITTED markdown projection. The DB INSERT
+  // below stores the ORIGINAL `message` verbatim — redact() never touches the
+  // authoritative store, only the .md the promote gate scans.
   const mdEntry = formatEntry(ts, message, category, tier, source, topics);
-  const md = `## ${ts} - ${message}\n${mdEntry.comment}\n\n`;
+  const md = `## ${ts} - ${redact(message)}\n${mdEntry.comment}\n\n`;
   fs.appendFileSync(path.join(pebblDir, 'manual-logs.md'), md);
 
   // Bi-temporal (v0.5): a new entry is the current belief, valid from now with
@@ -361,7 +364,7 @@ module.exports = function log(args) {
 function rebuildEventsView(pebblDir, rows) {
   let md = '# Events View (folded)\n\n';
   for (const row of rows) {
-    md += `## ${row.timestamp} - ${row.message}\n`;
+    md += `## ${row.timestamp} - ${redact(row.message)}\n`;
     md += `<!-- eid:${row.eid} cat:${row.category} topic:${row.topics} tier:${row.tier} actor:${row.actor} -->\n\n`;
   }
   fs.writeFileSync(path.join(pebblDir, 'events-view.md'), md);
