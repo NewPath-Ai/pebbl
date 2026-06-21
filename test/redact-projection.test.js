@@ -2,7 +2,7 @@
 // Mask secret-SHAPES at the db -> .md projection boundary, while the
 // authoritative store (db.sqlite / the event log) keeps the ORIGINAL text.
 // This is the unblock for the factory promote gate: a FAKE fixture key quoted
-// verbatim in a pebbl note (e.g. `api_key=live_droplet_key_abc123`) must not
+// verbatim in a pebbl note (e.g. an `api_key=…` assignment) must not
 // appear raw in the committed handoffs.md / manual-logs.md, or the gate's
 // SECRET_RE false-blocks a staging->main promote.
 //
@@ -25,8 +25,8 @@ const { materializeHandoffsMd } = require('../src/handoff');
 const { renderManualLogsMd, renderHandoffsMd, renderCommitLogMd, renderNarrativeMd } = require('../src/view');
 
 // The canonical secret-shape that blocks the real promote (a FAKE droplet key).
-const FAKE_SECRET = 'api_key=live_droplet_key_abc123';
-const FAKE_TOKEN = 'token=ghp_AAAAAAAAAAAAAAAAAAAAAAAA';
+const FAKE_SECRET = 'api_key=live_droplet_key_abc123'; // allowlist-secret: intentional fake fixture for the redaction test
+const FAKE_TOKEN = 'token=ghp_AAAAAAAAAAAAAAAAAAAAAAAA'; // allowlist-secret: intentional fake fixture for the redaction test
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-redact-'));
@@ -71,7 +71,7 @@ describe('redact() — the projection-boundary mask (unit)', () => {
   });
 
   it('masks every secret on a multi-secret line', () => {
-    const out = redact(`first ${FAKE_SECRET} then password="anotherlongsecret123" done`);
+    const out = redact(`first ${FAKE_SECRET} then password="anotherlongsecret123" done`); // allowlist-secret: intentional fake fixtures for the redaction test
     assert.equal(stillHasSecretShape(out), false);
     assert.ok(!out.includes('anotherlongsecret123'));
   });
