@@ -23,6 +23,16 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const { foldFull } = require('./fold');
 const { importanceForTier } = require('./rank');
+// redact() is the projection-boundary secret mask. The DB/event log keeps the
+// ORIGINAL text; only the COMMITTED .md these emitters write is sanitized, so a
+// fake fixture key quoted in a note can't trip the factory promote gate's
+// secret scan. It reuses privacy-scan's matcher (DRY: one leak-shape
+// definition) and is deterministic, so re-projecting the same rows is
+// byte-identical. NOTE: the view.sqlite row writer below is intentionally NOT
+// masked — that file is gitignored/disposable (rebuilt from events), never
+// committed, so masking it would diverge the read model from the source of
+// truth. Only the .md strings are sanitized.
+const { redact } = require('./privacy-scan');
 
 // ── markdown emitters (byte-identical tails) ─────────────────────────────────
 
@@ -34,7 +44,7 @@ function renderManualLogsMd(logs) {
   let md = '# Manual Logs\n\n';
   for (const row of ordered) {
     const topicStr = row.topics || '';
-    md += `## ${row.timestamp} - ${row.message}\n`;
+    md += `## ${row.timestamp} - ${redact(row.message)}\n`;
     md += `<!-- cat:${row.category} topic:${topicStr} tier:${row.tier} source:${row.source} -->\n\n`;
   }
   return md;
@@ -54,10 +64,10 @@ function renderHandoffsMd(handoffs) {
     const ts = row.closed_at || row.timestamp;
     const topic = row.topics || '';
     const status = row.status || 'open';
-    const blocks = [['summary', `handoff #${row.id}: ${row.summary}`]];
+    const blocks = [['summary', `handoff #${row.id}: ${redact(row.summary)}`]];
     for (const field of ['done', 'todo', 'blocked']) {
       for (const item of splitItems(row[field])) {
-        blocks.push([field, `handoff #${row.id} ${field}: ${item}`]);
+        blocks.push([field, `handoff #${row.id} ${field}: ${redact(item)}`]);
       }
     }
     for (const [field, message] of blocks) {
@@ -77,7 +87,7 @@ function renderNarrativeMd(narrative) {
   if (!narrative) return '';
   const refs = narrative.refs || [];
   const refsLine = refs.length > 0 ? `<!-- refs: ${refs.join(',')} -->\n` : '';
-  return `# Project Narrative\n\n${(narrative.text || '').trim()}\n\n${refsLine}<!-- updated: ${narrative.updated} -->\n`;
+  return `# Project Narrative\n\n${redact((narrative.text || '').trim())}\n\n${refsLine}<!-- updated: ${narrative.updated} -->\n`;
 }
 
 // commit-log.md. logCommit APPENDS per commit; we render the whole file from
@@ -86,7 +96,7 @@ function renderCommitLogMd(commits) {
   let md = '';
   for (const c of commits) {
     const shortHash = (c.hash || 'unknown').slice(0, 8);
-    const msg = (c.message || '').trim().split('\n')[0];
+    const msg = redact((c.message || '').trim().split('\n')[0]);
     const category = c.category || 'uncategorized';
     const tier = c.tier || 'fleeting';
     const fileList = (c.files || '').replace(/,$/, '');

@@ -7,6 +7,9 @@ const { openDb } = require('./db');
 const { ensureProjectFiles } = require('./rubric');
 const { displayEntry } = require('./log');
 const { mirrorHandoffs, stripHandoffPrefix } = require('./mirror');
+// Projection-boundary secret mask. handoffs.md is committed and the promote
+// gate scans it; the DB keeps the original summary/item text untouched.
+const { redact } = require('./privacy-scan');
 
 module.exports = function handoff(args) {
   const { flags, positional } = parseArgs(args);
@@ -252,10 +255,10 @@ function materializeHandoffsMd(pebblDir, db) {
     const ts = row.closed_at || row.timestamp;
     const topic = row.topics || '';
     const status = row.status || 'open';
-    const blocks = [['summary', `handoff #${row.id}: ${row.summary}`]];
+    const blocks = [['summary', `handoff #${row.id}: ${redact(row.summary)}`]];
     for (const field of ['done', 'todo', 'blocked']) {
       for (const item of splitItems(row[field])) {
-        blocks.push([field, `handoff #${row.id} ${field}: ${item}`]);
+        blocks.push([field, `handoff #${row.id} ${field}: ${redact(item)}`]);
       }
     }
     for (const [field, message] of blocks) {

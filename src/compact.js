@@ -20,6 +20,11 @@ const {
   renderCommitLogMd,
   writeViewSqlite,
 } = require('./view');
+// Projection-boundary secret mask, reused at every db -> .md render path so the
+// committed markdown can't trip the promote gate (the .md emitters in view.js
+// the rebuild path above uses are already masked; regenerateMarkdown below is
+// the one db.sqlite-driven loop that doesn't route through them).
+const { redact } = require('./privacy-scan');
 
 // Quarter label for a timestamp, e.g. "2026-04-15..." → "2026-Q2". Used as the
 // compactor bucket's time dimension (see key construction below).
@@ -144,7 +149,7 @@ function regenerateMarkdown(pebblDir) {
   let md = '# Manual Logs\n\n';
   for (const row of rows) {
     const topicStr = row.topics || '';
-    md += `## ${row.timestamp} - ${row.message}\n`;
+    md += `## ${row.timestamp} - ${redact(row.message)}\n`;
     md += `<!-- cat:${row.category} topic:${topicStr} tier:${row.tier} source:${row.source} -->\n\n`;
   }
 
