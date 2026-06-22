@@ -10,6 +10,9 @@ const { mirrorHandoffs, stripHandoffPrefix } = require('./mirror');
 // Projection-boundary secret mask. handoffs.md is committed and the promote
 // gate scans it; the DB keeps the original summary/item text untouched.
 const { redact } = require('./privacy-scan');
+// Write-time secret BLOCK — keeps an unmarked secret-shape out of the STORE
+// (db.sqlite + events.jsonl), which redact() never protected.
+const { guardWrite } = require('./secret-guard');
 
 module.exports = function handoff(args) {
   const { flags, positional } = parseArgs(args);
@@ -167,6 +170,17 @@ module.exports = function handoff(args) {
   checkFieldQuality(done, 'done');
   checkFieldQuality(todo, 'todo');
   checkFieldQuality(blocked, 'blocked');
+
+  // Write-time secret BLOCK (root fix): refuse to persist an unmarked token-
+  // shape in any persisted field. Mirrors the checkFieldQuality hook's spot —
+  // BEFORE the INSERT — so a blocked handoff leaves the store unchanged. The
+  // .md redaction below is kept as defense-in-depth for anything already stored.
+  guardWrite('handoff', [
+    { name: 'summary', value: summary },
+    { name: 'done', value: done },
+    { name: 'todo', value: todo },
+    { name: 'blocked', value: blocked },
+  ]);
   const docs = flags.docs
     ? JSON.stringify(flags.docs.split(',').map(s => s.trim()).filter(Boolean))
     : null;
