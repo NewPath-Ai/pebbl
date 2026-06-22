@@ -78,7 +78,7 @@ function storeState(dir) {
 }
 
 // A token-shape that scan() flags as the `token` class but is an obvious fake.
-const FAKE_TOKEN_MSG = 'the deploy key is ghp_AAAAAAAAAAAAAAAAAAAAAAAA somewhere';
+const FAKE_TOKEN_MSG = 'the deploy key is ghp_AAAAAAAAAAAAAAAAAAAAAAAA somewhere'; // allowlist-secret
 const CLEAN_MSG = 'the project uses sqlite because it keeps the store in-tree';
 
 describe('pebbl log — write-time secret BLOCK (default)', () => {
@@ -102,7 +102,7 @@ describe('pebbl log — write-time secret BLOCK (default)', () => {
 
   it('block also fires on the very first write (no store yet) and creates nothing', () => {
     const dir = project();
-    const r = run(dir, ['log', 'api_key=AAAAAAAAAAAAAAAAAAAAAAAA', '--cat', 'data']);
+    const r = run(dir, ['log', 'api_key=AAAAAAAAAAAAAAAAAAAAAAAA', '--cat', 'data']); // allowlist-secret
     assert.strictEqual(r.status, 1);
     // db.sqlite / events.jsonl must not have been created by a refused write.
     assert.strictEqual(storeState(dir).rows, 0);
@@ -195,8 +195,8 @@ describe('secret-guard unit', () => {
 
   it('findUnmarkedTokens flags only the token class and honors the marker per-line', () => {
     const fields = [
-      { name: 'message', value: 'ghp_AAAAAAAAAAAAAAAAAAAAAAAA' },
-      { name: 'note', value: `ghp_BBBBBBBBBBBBBBBBBBBBBBBB ${ALLOWLIST_MARKER}` },
+      { name: 'message', value: 'ghp_AAAAAAAAAAAAAAAAAAAAAAAA' }, // allowlist-secret
+      { name: 'note', value: `ghp_BBBBBBBBBBBBBBBBBBBBBBBB ${ALLOWLIST_MARKER}` }, // allowlist-secret
       { name: 'ip', value: 'connects to 8.8.8.8' }, // network class — NOT blocked
     ];
     const found = findUnmarkedTokens(fields);
@@ -208,7 +208,7 @@ describe('secret-guard unit', () => {
   it('the marker only exempts its own line, not a sibling line in the field', () => {
     const fields = [{
       name: 'message',
-      value: `ghp_AAAAAAAAAAAAAAAAAAAAAAAA\nfixture ghp_BBBBBBBBBBBBBBBBBBBBBBBB ${ALLOWLIST_MARKER}`,
+      value: `ghp_AAAAAAAAAAAAAAAAAAAAAAAA\nfixture ghp_BBBBBBBBBBBBBBBBBBBBBBBB ${ALLOWLIST_MARKER}`, // allowlist-secret
     }];
     const found = findUnmarkedTokens(fields);
     assert.strictEqual(found.length, 1, 'the unmarked line is still caught');
