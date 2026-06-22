@@ -177,9 +177,9 @@ module.exports = function handoff(args) {
   const ts = new Date().toISOString();
   const source = flags.source || 'agent';
   const topics = flags.topic || null;
-  const done = flags.done || null;
-  const todo = flags.todo || null;
-  const blocked = flags.blocked || null;
+  const done = joinField(flags.done);
+  const todo = joinField(flags.todo);
+  const blocked = joinField(flags.blocked);
 
   // Warn on fields that will materialize as one unsearchable block. Each field
   // becomes ';'-split items on close — a long field with no separators stays a
@@ -284,6 +284,18 @@ function malformedSummary(summary) {
   const words = s.split(/\s+/).filter(Boolean);
   if (words.length < 2 && s.length < 4) return 'too short to be a handoff';
   return null;
+}
+
+// Fold a repeatable field (--done/--todo/--blocked) into the single
+// ';'-separated string the handoffs table stores. parseArgs hands these in as an
+// ARRAY (one entry per flag occurrence) — so repeating the flag and giving one
+// ';'-joined value converge, and NO repeat is dropped. Tolerates a bare string
+// too (defensive, for any direct caller). Returns null when empty/absent.
+function joinField(value) {
+  if (value == null) return null;
+  const parts = Array.isArray(value) ? value : [value];
+  const joined = parts.map(s => String(s).trim()).filter(Boolean).join('; ');
+  return joined || null;
 }
 
 // Split a handoff field into atomic items on ';'.
@@ -408,6 +420,7 @@ function displayHandoff(row, db) {
 
 module.exports.displayHandoff = displayHandoff;
 module.exports.splitItems = splitItems;
+module.exports.joinField = joinField;
 module.exports.checkFieldQuality = checkFieldQuality;
 module.exports.materializeHandoffsMd = materializeHandoffsMd;
 module.exports.malformedSummary = malformedSummary;

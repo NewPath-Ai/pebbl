@@ -96,10 +96,29 @@ describe('parseArgs', () => {
     assert.deepStrictEqual(result.positional, []);
   });
 
-  it('parses handoff value flags (--done, --todo, --blocked)', () => {
+  it('parses handoff value flags (--done, --todo, --blocked) as arrays', () => {
+    // MULTI_FLAGS always land as arrays so a single shape covers single + repeated
+    // use; handoff.joinField folds them back into one ';' string.
     const result = parseArgs(['summary', '--done', 'task A; task B', '--todo', 'task C', '--blocked', 'waiting on API']);
-    assert.deepStrictEqual(result.flags, { done: 'task A; task B', todo: 'task C', blocked: 'waiting on API' });
+    assert.deepStrictEqual(result.flags, { done: ['task A; task B'], todo: ['task C'], blocked: ['waiting on API'] });
     assert.deepStrictEqual(result.positional, ['summary']);
+  });
+
+  // ── repeated multi-flags accumulate (regression) ────────────────────────
+  it('accumulates a repeated --done/--todo instead of dropping all but the last', () => {
+    // The bug: repeats overwrote, so `--done a --done b` silently lost "a".
+    const result = parseArgs(['s', '--done', 'a', '--done', 'b', '--todo', 'c']);
+    assert.deepStrictEqual(result.flags, { done: ['a', 'b'], todo: ['c'] });
+  });
+
+  it('accumulates repeats given via --flag=value too', () => {
+    const result = parseArgs(['--done=a', '--done=b']);
+    assert.deepStrictEqual(result.flags, { done: ['a', 'b'] });
+  });
+
+  it('does NOT accumulate non-multi flags (last still wins)', () => {
+    const result = parseArgs(['--cat', 'x', '--cat', 'y']);
+    assert.deepStrictEqual(result.flags, { cat: 'y' });
   });
 
   it('parses --deep as a boolean flag (pebbl check --deep)', () => {

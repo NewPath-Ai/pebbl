@@ -12,6 +12,24 @@ const KNOWN_FLAGS = new Set([
 
 const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'open', 'list-open', 'show', 'generate', 'include-archive', 'deep', 'refresh', 'share', 'json', 'all']);
 
+// Flags that may legitimately be given more than once. A repeat ACCUMULATES
+// into an array instead of overwriting — the old behavior silently kept only the
+// LAST occurrence, so `--done a --done b` dropped "a" without a peep (the bug
+// that ate most of a handoff's items). The value is ALWAYS an array for these
+// keys (even a single use), so consumers handle one shape. handoff.js's
+// joinField folds the array back into the one ';'-separated string the table
+// stores, so `--done "a; b"` and `--done a --done b` converge.
+const MULTI_FLAGS = new Set(['done', 'todo', 'blocked']);
+
+// Assign a parsed flag value, accumulating repeats for MULTI_FLAGS.
+function setFlag(flags, key, value) {
+  if (MULTI_FLAGS.has(key)) {
+    (flags[key] || (flags[key] = [])).push(value);
+  } else {
+    flags[key] = value;
+  }
+}
+
 // Flags whose value must be a positive integer (entry IDs). Used by the shared
 // guard below so a non-numeric value errors loudly instead of silently storing
 // NULL (parseInt('abc') === NaN, which SQLite coerces to NULL).
@@ -64,14 +82,14 @@ function parseArgs(args) {
         if (inlineValue === '') {
           missingValueFlags.push(key);
         } else {
-          flags[key] = inlineValue;
+          setFlag(flags, key, inlineValue);
         }
         continue;
       }
 
       const next = args[i + 1];
       if (next !== undefined && !next.startsWith('--')) {
-        flags[key] = next;
+        setFlag(flags, key, next);
         i++;
       } else {
         // No usable value: record instead of silently dropping.
@@ -112,4 +130,4 @@ function assertIntegerFlags(parsed, keys = INTEGER_FLAGS) {
   }
 }
 
-module.exports = { parseArgs, assertCompleteFlags, assertIntegerFlags, INTEGER_FLAGS };
+module.exports = { parseArgs, assertCompleteFlags, assertIntegerFlags, INTEGER_FLAGS, MULTI_FLAGS };

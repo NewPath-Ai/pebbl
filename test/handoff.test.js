@@ -6,7 +6,7 @@ const path = require('path');
 const os = require('os');
 const { spawnSync, execSync } = require('child_process');
 const Database = require('better-sqlite3');
-const { splitItems, checkFieldQuality, materializeHandoffsMd, malformedSummary } = require('../src/handoff');
+const { splitItems, joinField, checkFieldQuality, materializeHandoffsMd, malformedSummary } = require('../src/handoff');
 
 const BIN = path.resolve(__dirname, '../bin/pebbl.js');
 
@@ -445,6 +445,16 @@ describe('handoff - field helpers', () => {
     assert.deepStrictEqual(splitItems('single item only'), ['single item only']);
   });
 
+  it('joinField folds repeated-flag arrays into one ;-joined string', () => {
+    assert.strictEqual(joinField(['a', 'b']), 'a; b');        // repeated flags
+    assert.strictEqual(joinField('a; b'), 'a; b');            // single ;-joined flag
+    assert.strictEqual(joinField(['a; b', 'c']), 'a; b; c');  // mixed styles
+    assert.strictEqual(joinField(['  a  ', '', '  ']), 'a');  // trims, drops empties
+    assert.strictEqual(joinField(undefined), null);
+    assert.strictEqual(joinField(null), null);
+    assert.strictEqual(joinField([]), null);
+  });
+
   it('malformedSummary REJECTS bare-number / empty / stub summaries', () => {
     // The exact junk shapes that polluted the shared store (handoffs ~15-24).
     assert.ok(malformedSummary(''), 'empty is rejected');
@@ -524,6 +534,43 @@ describe('handoff - create well-formedness guard (end to end)', () => {
     assert.equal(r.status, 0, `expected exit 0, got ${r.status}; stderr: ${r.stderr}`);
     assert.match(r.stdout, /Handoff #1 created/);
     assert.strictEqual(openCount(dir), 1, 'a valid handoff is stored as open');
+  });
+});
+
+describe('handoff - repeated list flags (end to end)', () => {
+  let dir;
+  after(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); });
+
+  function lastHandoff(d) {
+    const db = new Database(path.join(d, '.pebbl', 'db.sqlite'), { readonly: true });
+    try {
+      return db.prepare('SELECT done, todo, blocked FROM handoffs ORDER BY id DESC LIMIT 1').get();
+    } finally {
+      db.close();
+    }
+  }
+
+  it('keeps EVERY repeated --done/--todo item (no silent overwrite)', () => {
+    dir = initProject();
+    const r = runHandoff(dir, [
+      'part 2: harden the factory against drift',
+      '--done', 'mapped the interface',
+      '--done', 'wrote the spec',
+      '--todo', 'build the gate',
+      '--todo', 'add a regression test',
+    ]);
+    assert.equal(r.status, 0, `expected exit 0; stderr: ${r.stderr}`);
+
+    const row = lastHandoff(dir);
+    assert.deepStrictEqual(splitItems(row.done), ['mapped the interface', 'wrote the spec']);
+    assert.deepStrictEqual(splitItems(row.todo), ['build the gate', 'add a regression test']);
+  });
+
+  it('mixes a repeated flag with a ;-joined value', () => {
+    dir = initProject();
+    const r = runHandoff(dir, ['summary that is real', '--done', 'a; b', '--done', 'c']);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.deepStrictEqual(splitItems(lastHandoff(dir).done), ['a', 'b', 'c']);
   });
 });
 
