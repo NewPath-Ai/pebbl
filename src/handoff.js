@@ -157,6 +157,23 @@ module.exports = function handoff(args) {
     process.exit(1);
   }
 
+  // WELL-FORMEDNESS guard (root fix for the malformed-stub pollution). Handoffs
+  // ~15-24 in the shared store were bare numbers ("4", "5") or a stray subcommand
+  // word ("list") — typos where the summary never landed, yet they counted as
+  // open work forever. Reject a non-trivial summary at WRITE time so the open
+  // count stays meaningful. BEFORE the secret guard / INSERT so a bad create
+  // leaves the store untouched. (Reporting-only doctor flags any that slip
+  // through a different write path; this is the new-write gate.)
+  const wf = malformedSummary(summary);
+  if (wf) {
+    console.error(
+      `pebbl: handoff summary "${summary}" is malformed (${wf}). A handoff summary ` +
+      `must describe the work for the next session in a few words.\n` +
+      `  e.g. pebbl handoff "wired GLM judge, blocked on env path" --todo "export FACTORY_MODELS_ENV"`
+    );
+    process.exit(1);
+  }
+
   const ts = new Date().toISOString();
   const source = flags.source || 'agent';
   const topics = flags.topic || null;
@@ -235,6 +252,39 @@ module.exports = function handoff(args) {
     `(see all open: pebbl handoff --list-open)`
   );
 };
+
+// Well-formedness check for a handoff summary. Returns a SHORT reason string
+// when the summary is malformed (so create can reject it), or null when it is
+// fine. Deterministic + pure (no DB, no IO) so doctor and tests can reuse it.
+//
+// Rejected (these are the stub shapes that polluted the store — see handoffs
+// ~15-24 = bare numbers, and "list" = a fat-fingered subcommand that fell
+// through to the create path):
+//   - empty / whitespace-only
+//   - a bare number ("4", "5", "12")
+//   - a lone pebbl subcommand word ("list", "open", "close", "latest",
+//     "list-open") — almost always a mistyped command, not a real summary
+//   - too trivial to be a handoff: a single short token (< 4 chars, e.g. "wip",
+//     "x", "ok") carries no next-session signal
+// Allowed: anything that reads like a sentence/phrase — two+ words, or a single
+// word of real length (e.g. "refactored-the-segmenter"). The bar is deliberately
+// low so a terse-but-real summary still writes; only the junk shapes bounce.
+const SUBCOMMAND_WORDS = new Set([
+  'list', 'open', 'close', 'closed', 'latest', 'list-open', 'help',
+]);
+function malformedSummary(summary) {
+  const s = String(summary == null ? '' : summary).trim();
+  if (s === '') return 'empty';
+  if (/^\d+$/.test(s)) return 'bare number, not a description';
+  if (SUBCOMMAND_WORDS.has(s.toLowerCase())) {
+    return `looks like the "${s}" subcommand, not a summary`;
+  }
+  // A real summary is either multi-word, or a single token long enough to be a
+  // genuine slug. A lone token under 4 chars (wip/x/ok) is a stub.
+  const words = s.split(/\s+/).filter(Boolean);
+  if (words.length < 2 && s.length < 4) return 'too short to be a handoff';
+  return null;
+}
 
 // Split a handoff field into atomic items on ';'.
 function splitItems(field) {
@@ -360,3 +410,4 @@ module.exports.displayHandoff = displayHandoff;
 module.exports.splitItems = splitItems;
 module.exports.checkFieldQuality = checkFieldQuality;
 module.exports.materializeHandoffsMd = materializeHandoffsMd;
+module.exports.malformedSummary = malformedSummary;

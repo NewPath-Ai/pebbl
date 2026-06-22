@@ -12,6 +12,10 @@ const { _internal: checkInternal } = require('./check');
 // heuristic, so doctor and search agree on what a "term" is (no second
 // tokenizer to drift). See src/search.js _internal.normalize.
 const { _internal: searchInternal } = require('./search');
+// REUSE the handoff well-formedness rule — doctor must agree with create.js on
+// what "malformed" means (one definition, no second copy to drift). See
+// src/handoff.js malformedSummary.
+const { malformedSummary } = require('./handoff');
 
 // `pebbl doctor` — a report-only memory-health command. Where `check` compares
 // memory-vs-code (does a cited file still exist?), `doctor` compares
@@ -49,6 +53,12 @@ const DEFAULTS = {
   // Minimum distinct content tokens an entry must have before it can take part
   // in the overlap math — a one-word entry would trivially match many others.
   min_terms: 3,
+  // Handoff staleness: a handoff still status:open this many days after it was
+  // written. The friction was 42 "open" handoffs that aren't really open — most
+  // were just never closed when their work landed. 14 days is a soft nudge: a
+  // handoff open past two weeks is probably finished-but-unclosed, not active.
+  handoff_open_days: 14,
+  handoff_cap: 10,
 };
 
 function loadDoctorConfig(pebblDir, { all = false } = {}) {
@@ -59,6 +69,8 @@ function loadDoctorConfig(pebblDir, { all = false } = {}) {
     stalenessHorizonDays: cfg.staleness_horizon_days ?? DEFAULTS.staleness_horizon_days,
     stalenessCap: cfg.staleness_cap ?? DEFAULTS.staleness_cap,
     minTerms: cfg.min_terms ?? DEFAULTS.min_terms,
+    handoffOpenDays: cfg.handoff_open_days ?? DEFAULTS.handoff_open_days,
+    handoffCap: cfg.handoff_cap ?? DEFAULTS.handoff_cap,
   };
   if (all) {
     // Widen every knob: more output, a lower bar to flag, a shorter horizon.
@@ -66,6 +78,9 @@ function loadDoctorConfig(pebblDir, { all = false } = {}) {
     out.contradictionCap = out.contradictionCap * 4;
     out.stalenessHorizonDays = Math.round(out.stalenessHorizonDays / 2);
     out.stalenessCap = out.stalenessCap * 4;
+    // Handoffs: surface every open one (no horizon) and lift the cap.
+    out.handoffOpenDays = 0;
+    out.handoffCap = out.handoffCap * 10;
   }
   return out;
 }
@@ -230,11 +245,51 @@ function detectMissing(entries, repoRoot, { deep = false } = {}) {
   return flagged.map(e => ({ dimension: 'missing', entry: e }));
 }
 
-// ── compose all three (pure) ────────────────────────────────────────────────
+// ── detector 4: handoff health (lifecycle, the friction this task targets) ───
+//
+// Two memory-vs-memory signals over the handoffs table (NOT the logs table):
+//   - MALFORMED: an open handoff whose summary fails malformedSummary() — a
+//     bare number / stub / stray subcommand word that never described real work
+//     (the ~10 junk handoffs that polluted the open count). Reuses the SAME rule
+//     create.js now rejects, so a stub written before the guard still surfaces.
+//   - LONG-OPEN: a handoff still status:open past handoffOpenDays — almost
+//     certainly finished-but-never-closed (the close-on-completion gap). Pure +
+//     report-only: it never closes anything, it just makes the rot visible so a
+//     human/agent can `pebbl handoff --close <id>`.
+// Takes already-loaded handoff rows so it stays side-effect-free and testable.
+function detectHandoffHealth(handoffs, { openDays, cap, now } = {}) {
+  openDays = openDays ?? DEFAULTS.handoff_open_days;
+  cap = cap ?? DEFAULTS.handoff_cap;
+  const nowMs = now != null ? Date.parse(now) : Date.now();
+
+  const out = [];
+  for (const h of handoffs) {
+    if (String(h.status || 'open') !== 'open') continue; // only open ones can rot
+    const malformed = malformedSummary(h.summary);
+    const ts = Date.parse(h.timestamp);
+    const ageDays = Number.isNaN(ts) ? 0 : (nowMs - ts) / 86400000;
+    const longOpen = ageDays >= openDays;
+    if (!malformed && !longOpen) continue;
+    out.push({
+      dimension: 'handoff',
+      handoff: h,
+      malformed: malformed || null,         // reason string, or null
+      ageDays: Math.round(ageDays),
+      longOpen,
+    });
+  }
+  // Malformed first (highest-confidence junk), then oldest-open. Cap to stay quiet.
+  out.sort((a, b) =>
+    (Number(!!b.malformed) - Number(!!a.malformed)) || (b.ageDays - a.ageDays));
+  return out.slice(0, cap);
+}
+
+// ── compose all four (pure) ─────────────────────────────────────────────────
 //
 // Pure orchestrator over already-loaded current-belief entries: returns the
-// three detector result arrays. Kept side-effect-free so tests drive it without
-// a real store (the check.js _internal pattern).
+// four detector result arrays. Kept side-effect-free so tests drive it without
+// a real store (the check.js _internal pattern). `handoffs` is optional — when
+// absent (older callers / no handoffs table), the handoff section is empty.
 function diagnose(entries, repoRoot, opts = {}) {
   return {
     contradictions: detectContradictions(entries, {
@@ -248,6 +303,11 @@ function diagnose(entries, repoRoot, opts = {}) {
       now: opts.now,
     }),
     missing: detectMissing(entries, repoRoot, { deep: !!opts.deep }),
+    handoffs: detectHandoffHealth(opts.handoffs || [], {
+      openDays: opts.handoffOpenDays,
+      cap: opts.handoffCap,
+      now: opts.now,
+    }),
   };
 }
 
@@ -287,11 +347,29 @@ function toJson(results) {
       suggested: supersedeHint(e.id),
     });
   }
+  for (const c of results.handoffs || []) {
+    const h = c.handoff;
+    const reason = c.malformed
+      ? `handoff #${h.id} summary is malformed (${c.malformed}) and still open`
+      : `handoff #${h.id} has been open ${c.ageDays}d — likely finished but never closed`;
+    out.push({
+      dimension: 'handoff',
+      ids: [h.id],
+      reason,
+      suggested: closeHint(h.id),
+    });
+  }
   return out;
 }
 
 function supersedeHint(id) {
   return `pebbl log "<corrected memory>" --corrects ${id}`;
+}
+
+// Handoffs don't supersede — they close. The fix for a malformed or finished-
+// but-open handoff is to close it (report-only doctor never does this itself).
+function closeHint(id) {
+  return `pebbl handoff --close ${id}`;
 }
 
 function truncate(msg) {
@@ -326,6 +404,19 @@ module.exports = function doctor(args) {
       ORDER BY timestamp DESC`
   ).all();
 
+  // Open handoffs for the lifecycle/health detector. Read-only SELECT (doctor
+  // never mutates the store). Guarded in case an older store has no handoffs
+  // table — fall back to an empty list so doctor still runs.
+  let handoffs = [];
+  try {
+    handoffs = db.prepare(
+      `SELECT id, timestamp, summary, status FROM handoffs WHERE status = 'open' ORDER BY id DESC`
+    ).all();
+  } catch {
+    handoffs = []; // no handoffs table (pre-handoff store)
+  }
+  opts.handoffs = handoffs;
+
   const results = diagnose(entries, repoRoot, opts);
 
   if (flags.json) {
@@ -333,9 +424,10 @@ module.exports = function doctor(args) {
     return;
   }
 
-  const total = results.contradictions.length + results.staleness.length + results.missing.length;
+  const total = results.contradictions.length + results.staleness.length
+    + results.missing.length + results.handoffs.length;
   if (total === 0) {
-    console.log('pebbl doctor: memory looks consistent — no contradictions, stale beliefs, or missing artifacts flagged.');
+    console.log('pebbl doctor: memory looks consistent — no contradictions, stale beliefs, missing artifacts, or stale/malformed handoffs flagged.');
     return;
   }
 
@@ -374,12 +466,30 @@ module.exports = function doctor(args) {
       console.log();
     }
   }
+
+  if (results.handoffs.length) {
+    const n = results.handoffs.length;
+    console.log(`\nHandoffs — ${n} open handoff${n === 1 ? '' : 's'} that look stale or malformed (the open count is only meaningful if these get closed):\n`);
+    for (const c of results.handoffs) {
+      const h = c.handoff;
+      const date = String(h.timestamp || '').slice(0, 10);
+      console.log(`#${h.id} [open] ${date} — ${truncate(String(h.summary || ''))}`);
+      if (c.malformed) {
+        console.log(`   reason: malformed summary (${c.malformed}) — never described real work`);
+      } else {
+        console.log(`   reason: open ${c.ageDays}d — likely finished but never closed`);
+      }
+      console.log(`   if done, close:  ${closeHint(h.id)}`);
+      console.log();
+    }
+  }
 };
 
 module.exports._internal = {
   detectContradictions,
   detectStaleness,
   detectMissing,
+  detectHandoffHealth,
   diagnose,
   toJson,
   contentTerms,

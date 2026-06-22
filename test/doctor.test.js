@@ -9,6 +9,7 @@ const {
   detectContradictions,
   detectStaleness,
   detectMissing,
+  detectHandoffHealth,
   diagnose,
   toJson,
   contentTerms,
@@ -164,6 +165,55 @@ describe('doctor - detectMissing (reuses check.js)', () => {
   });
 });
 
+// ── detector 4: handoff health (lifecycle) ────────────────────────────────────
+
+describe('doctor - detectHandoffHealth', () => {
+  const now = '2026-06-22T00:00:00Z';
+  const ho = (o) => ({ id: 1, timestamp: now, summary: 'real work summary', status: 'open', ...o });
+
+  it('flags a MALFORMED open handoff (bare number)', () => {
+    const out = detectHandoffHealth([ho({ id: 7, summary: '4' })], { openDays: 14, cap: 10, now });
+    assert.equal(out.length, 1);
+    assert.equal(out[0].handoff.id, 7);
+    assert.ok(out[0].malformed, 'carries a malformed reason');
+  });
+
+  it('flags a LONG-OPEN handoff (open past the threshold)', () => {
+    const out = detectHandoffHealth(
+      [ho({ id: 3, timestamp: '2026-05-01T00:00:00Z' })], // ~52d before now
+      { openDays: 14, cap: 10, now });
+    assert.equal(out.length, 1);
+    assert.equal(out[0].handoff.id, 3);
+    assert.equal(out[0].malformed, null);
+    assert.ok(out[0].longOpen);
+    assert.ok(out[0].ageDays >= 14);
+  });
+
+  it('does NOT flag a recent, well-formed open handoff', () => {
+    const out = detectHandoffHealth([ho({ id: 1, timestamp: now })], { openDays: 14, cap: 10, now });
+    assert.equal(out.length, 0);
+  });
+
+  it('does NOT flag a CLOSED handoff even if old/malformed', () => {
+    const out = detectHandoffHealth(
+      [ho({ id: 9, summary: '5', status: 'closed', timestamp: '2026-01-01T00:00:00Z' })],
+      { openDays: 14, cap: 10, now });
+    assert.equal(out.length, 0);
+  });
+
+  it('respects the cap and sorts malformed before merely-old', () => {
+    const handoffs = [
+      ho({ id: 1, timestamp: '2026-05-01T00:00:00Z' }),        // old, well-formed
+      ho({ id: 2, summary: '12', timestamp: now }),            // malformed, recent
+      ho({ id: 3, timestamp: '2026-04-01T00:00:00Z' }),        // older, well-formed
+    ];
+    const out = detectHandoffHealth(handoffs, { openDays: 14, cap: 2, now });
+    assert.equal(out.length, 2);
+    assert.ok(out[0].malformed, 'malformed sorts first');
+    assert.equal(out[0].handoff.id, 2);
+  });
+});
+
 // ── compose + clean-store + json ──────────────────────────────────────────────
 
 describe('doctor - diagnose (composition)', () => {
@@ -180,6 +230,27 @@ describe('doctor - diagnose (composition)', () => {
     assert.equal(r.staleness.length, 0);
     assert.equal(r.missing.length, 0);
     assert.equal(toJson(r).length, 0);
+  });
+
+  it('a malformed open handoff surfaces in the json contract with a close hint', () => {
+    const repo = tmp();
+    const r = diagnose([], repo, {
+      now: '2026-06-22T00:00:00Z',
+      handoffs: [{ id: 7, timestamp: '2026-06-22T00:00:00Z', summary: '4', status: 'open' }],
+    });
+    assert.equal(r.handoffs.length, 1);
+    const json = toJson(r);
+    const hit = json.find(c => c.dimension === 'handoff');
+    assert.ok(hit, 'a handoff candidate is emitted');
+    assert.deepEqual(hit.ids, [7]);
+    assert.match(hit.reason, /malformed/);
+    assert.match(hit.suggested, /pebbl handoff --close 7/);
+  });
+
+  it('clean store with no handoffs: handoff dimension empty', () => {
+    const repo = tmp();
+    const r = diagnose([], repo, { now: '2026-06-22T00:00:00Z' }); // no opts.handoffs
+    assert.equal(r.handoffs.length, 0);
   });
 
   it('known contradiction surfaces in the json contract', () => {
