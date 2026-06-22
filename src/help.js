@@ -150,6 +150,10 @@ Examples:
 
 Tip: if you omit --cat, the rubric tries to classify. If it falls
 back to 'uncategorized', pebbl prints a loud warning.
+
+Secret guard: an unmarked secret-shape (token class) is BLOCKED before it can
+enter the store (nothing is written, exit 1). Add \`allowlist-secret\` to the
+line for a deliberate fixture, or set PEBBL_SECRET_GUARD=warn|off to relax it.
 `,
 
   search: `pebbl search "[query]" — semantic + keyword search

@@ -9,6 +9,7 @@ const { isThinEntry } = require('./detect-thin');
 const { execFileSync } = require('child_process');
 const { appendLogEvent, appendCorrectLogEvent } = require('./events');
 const { detectRemoteVisibility, redact } = require('./privacy-scan');
+const { guardWrite } = require('./secret-guard');
 const { importanceForTier } = require('./rank');
 
 // P5 — foundation private-by-default (design Q3=B). Decide whether THIS entry's
@@ -133,6 +134,13 @@ module.exports = function log(args) {
   }
 
   validate(flags);
+
+  // Write-time secret BLOCK (root fix): an unmarked token-shape in the message
+  // must never enter the store (db.sqlite + events.jsonl keep it RAW; the .md
+  // redaction only masks the projection). Fires BEFORE any write below, so a
+  // blocked log leaves the store byte-for-byte unchanged. `allowlist-secret` on
+  // a line exempts it; PEBBL_SECRET_GUARD=warn/off relaxes the gate.
+  guardWrite('log', [{ name: 'message', value: message }]);
 
   const pebblDir = requirePebblDir();
 

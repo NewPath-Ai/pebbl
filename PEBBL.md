@@ -90,6 +90,10 @@ Search runs entirely inside SQLite. Pebbl builds an FTS5 full-text index over th
 
 The rubric is intentionally conservative. It catches obvious cases; explicit `--cat` always wins.
 
+### A write-time guard blocks unmarked secrets
+
+`pebbl log` and `pebbl handoff` refuse to persist an unmarked secret-shape (the `token` class — `sk-…`, AWS/GitHub tokens, `api_key=…` assignments). Because the store (db.sqlite + events.jsonl) keeps text raw, this BLOCK is the only thing that keeps a real secret out of shared, append-only memory; the `.md` redaction only masks the committed projection. A blocked write exits non-zero and persists nothing. Add `allowlist-secret` to a line for a deliberate fixture, or set `PEBBL_SECRET_GUARD=warn` (writes + warns, for migration) / `=off` (silent). Default when unset is `block`.
+
 ## Handoffs in detail
 
 Handoffs are pebbl's most opinionated feature. They're worth understanding fully.
