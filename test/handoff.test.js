@@ -4,8 +4,24 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawnSync, execSync } = require('child_process');
 const Database = require('better-sqlite3');
-const { splitItems, checkFieldQuality, materializeHandoffsMd } = require('../src/handoff');
+const { splitItems, checkFieldQuality, materializeHandoffsMd, malformedSummary } = require('../src/handoff');
+
+const BIN = path.resolve(__dirname, '../bin/pebbl.js');
+
+// A real, init'd pebbl project in a git repo so `pebbl handoff` finds .pebbl and
+// the create path (auto-collect git log) doesn't error. Returns the project dir.
+function initProject() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-handoff-e2e-'));
+  execSync('git init -q', { cwd: dir });
+  spawnSync(BIN, ['init'], { cwd: dir, encoding: 'utf8' });
+  return dir;
+}
+
+function runHandoff(dir, args) {
+  return spawnSync(BIN, ['handoff', ...args], { cwd: dir, encoding: 'utf8' });
+}
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-test-'));
@@ -429,6 +445,30 @@ describe('handoff - field helpers', () => {
     assert.deepStrictEqual(splitItems('single item only'), ['single item only']);
   });
 
+  it('malformedSummary REJECTS bare-number / empty / stub summaries', () => {
+    // The exact junk shapes that polluted the shared store (handoffs ~15-24).
+    assert.ok(malformedSummary(''), 'empty is rejected');
+    assert.ok(malformedSummary('   '), 'whitespace-only is rejected');
+    assert.ok(malformedSummary('4'), 'a bare number is rejected');
+    assert.ok(malformedSummary('5'), 'a bare number is rejected');
+    assert.ok(malformedSummary('12'), 'a multi-digit bare number is rejected');
+    assert.ok(malformedSummary('list'), 'a stray subcommand word is rejected');
+    assert.ok(malformedSummary('open'), 'a stray subcommand word is rejected');
+    assert.ok(malformedSummary('wip'), 'a single short stub token is rejected');
+    // The reason is a short string, not just truthy.
+    assert.match(malformedSummary('4'), /bare number/);
+    assert.match(malformedSummary('list'), /subcommand/);
+  });
+
+  it('malformedSummary ALLOWS a real summary', () => {
+    assert.strictEqual(malformedSummary('wired GLM judge, blocked on env path'), null);
+    assert.strictEqual(malformedSummary('refactored the segmenter'), null);
+    // A single long slug-style token still reads as real work.
+    assert.strictEqual(malformedSummary('refactored-the-segmenter'), null);
+    // A terse but real two-word summary writes.
+    assert.strictEqual(malformedSummary('fixed retire'), null);
+  });
+
   it('checkFieldQuality warns on long fields with no separators', () => {
     const warnings = [];
     const origErr = console.error;
@@ -443,6 +483,47 @@ describe('handoff - field helpers', () => {
     assert.strictEqual(warnings.length, 1);
     assert.match(warnings[0], /--done/);
     assert.match(warnings[0], /one big block/);
+  });
+});
+
+describe('handoff - create well-formedness guard (end to end)', () => {
+  let dir;
+  after(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); });
+
+  function openCount(d) {
+    const db = new Database(path.join(d, '.pebbl', 'db.sqlite'), { readonly: true });
+    try {
+      return db.prepare("SELECT COUNT(*) AS c FROM handoffs WHERE status = 'open'").get().c;
+    } finally {
+      db.close();
+    }
+  }
+
+  it('REJECTS a bare-number summary at write time (nothing stored)', () => {
+    dir = initProject();
+    const r = runHandoff(dir, ['4']);
+    assert.notEqual(r.status, 0, 'a bare-number handoff must exit non-zero');
+    assert.match(r.stderr, /malformed/);
+    // The store must be untouched — no open stub created.
+    assert.strictEqual(openCount(dir), 0, 'no handoff row may be written');
+  });
+
+  it('REJECTS a stray subcommand word ("list") as a summary', () => {
+    dir = initProject();
+    const r = runHandoff(dir, ['list']);
+    // "list" is a real flag-less arg here; the create path must bounce it, not
+    // silently store it. (Note: `pebbl handoff --list` is the actual subcommand.)
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /malformed/);
+    assert.strictEqual(openCount(dir), 0);
+  });
+
+  it('ALLOWS a valid summary (still writes one open handoff)', () => {
+    dir = initProject();
+    const r = runHandoff(dir, ['wired GLM judge, blocked on env path', '--todo', 'export FACTORY_MODELS_ENV']);
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}; stderr: ${r.stderr}`);
+    assert.match(r.stdout, /Handoff #1 created/);
+    assert.strictEqual(openCount(dir), 1, 'a valid handoff is stored as open');
   });
 });
 
