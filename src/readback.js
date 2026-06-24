@@ -29,6 +29,7 @@ const { rankCandidates } = require('./rank');
 // behavior are identical to `pebbl search` — DRY, and we never fork the FTS
 // semantics. We do NOT change search.js; we only consume its _internal export.
 const { buildMatchQuery, queryTerms } = require('./search')._internal;
+const { renderFactoryGuide } = require('./factory-guide'); // ONE printer, shared by the trio
 
 // ── reasoning subset (the real fold schema) ──────────────────────────────────
 //
@@ -494,24 +495,7 @@ const FACTORY_GUIDE = {
 };
 
 function printFactoryGuide(asJson) {
-  if (asJson) {
-    process.stdout.write(JSON.stringify(FACTORY_GUIDE, null, 2) + '\n');
-    return;
-  }
-  const g = FACTORY_GUIDE;
-  const lines = [
-    `readback — factory integration guide (trigger-conditions, not stage names)`,
-    ``,
-    `  call_when:    ${g.call_when}`,
-    `  precondition: ${g.precondition}`,
-    `  effect:       ${g.effect}`,
-    `  consumes:     ${g.consumes}`,
-    `  produces:     ${g.produces}`,
-    ``,
-    `  edges (every edge tagged BUILT|PLANNED — PLANNED = surface it, do not wire):`,
-  ];
-  for (const e of g.edges) lines.push(`    -> ${e.to}  [${e.status}]`);
-  process.stdout.write(lines.join('\n') + '\n');
+  process.stdout.write(renderFactoryGuide(FACTORY_GUIDE, { json: asJson }));
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
