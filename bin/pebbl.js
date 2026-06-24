@@ -11,6 +11,7 @@ const commands = {
   init:         () => require('../src/init')(args),
   log:          () => require('../src/log')(args),
   search:       () => require('../src/search')(args),
+  readback:     () => require('../src/readback')(args),
   context:      () => require('../src/context')(args),
   compact:      () => require('../src/compact')(args),
   rebuild:      () => require('../src/rebuild')(args),
