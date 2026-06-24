@@ -31,6 +31,7 @@
 const { requirePebblDir } = require('./find-pebbl');
 const { readEvents } = require('./events');
 const { foldFull } = require('./fold');
+const { renderFactoryGuide } = require('./factory-guide'); // ONE printer, shared by the trio
 
 // Default frequency at/above which a signature is a PATTERN (design §3: "freq ≥
 // threshold"). 3 = the band-aid floor (two is a coincidence, three is a class).
@@ -257,25 +258,7 @@ const FACTORY_GUIDE = {
 };
 
 function printFactoryGuide(asJson) {
-  if (asJson) {
-    process.stdout.write(JSON.stringify(FACTORY_GUIDE, null, 2) + '\n');
-    return;
-  }
-  const g = FACTORY_GUIDE;
-  const lines = [
-    `${g.command} — factory integration guide (trigger-conditions, not stage names)`,
-    ``,
-    `  call_when:    ${g.call_when}`,
-    `  precondition: ${g.precondition}`,
-    `  effect:       ${g.effect}`,
-    `  consumes:     ${g.consumes}`,
-    `  produces:     ${g.produces}`,
-    `  caveat:       ${g.caveat}`,
-    ``,
-    `  edges (every edge tagged BUILT|PLANNED — PLANNED = surface it, do not wire):`,
-  ];
-  for (const e of g.edges) lines.push(`    -> ${e.to}  [${e.status}]`);
-  process.stdout.write(lines.join('\n') + '\n');
+  process.stdout.write(renderFactoryGuide(FACTORY_GUIDE, { json: asJson }));
 }
 
 // ── CLI arg parsing (own raw-argv parse, like liveness/readback) ─────────────

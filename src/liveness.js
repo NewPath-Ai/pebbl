@@ -39,6 +39,7 @@ const {
   makeHeartbeatEvent,
 } = require('./events');
 const { foldFull } = require('./fold');
+const { renderFactoryGuide } = require('./factory-guide'); // ONE printer, shared by the trio
 
 // The job name `check` beats for itself (self-proving step a). A check first
 // records that IT ran, then asserts that beat is fresh — so a check process that
@@ -287,24 +288,7 @@ const FACTORY_GUIDE = {
 };
 
 function printFactoryGuide(which, asJson) {
-  const g = FACTORY_GUIDE[which];
-  if (asJson) {
-    process.stdout.write(JSON.stringify(g, null, 2) + '\n');
-    return;
-  }
-  const lines = [
-    `${g.command} — factory integration guide (trigger-conditions, not stage names)`,
-    ``,
-    `  call_when:    ${g.call_when}`,
-    `  precondition: ${g.precondition}`,
-    `  effect:       ${g.effect}`,
-    `  consumes:     ${g.consumes}`,
-    `  produces:     ${g.produces}`,
-    ``,
-    `  edges (every edge tagged BUILT|PLANNED — PLANNED = surface it, do not wire):`,
-  ];
-  for (const e of g.edges) lines.push(`    -> ${e.to}  [${e.status}]`);
-  process.stdout.write(lines.join('\n') + '\n');
+  process.stdout.write(renderFactoryGuide(FACTORY_GUIDE[which], { json: asJson }));
 }
 
 // ── CLI arg parsing (own raw-argv parse, like readback/context) ──────────────
