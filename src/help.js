@@ -166,6 +166,36 @@ Flags:
 ${CATEGORIES}
 `,
 
+  readback: `pebbl readback <spec-file | -> — surface colliding prior work for an incoming task
+
+Deterministic, NO-LLM. Reads an incoming task spec (a file path, or '-' for
+stdin) and surfaces prior memory entries that COLLIDE with it — i.e. share a
+real artifact, file path, or code identifier — so you RESUME or SUPERSEDE the
+prior work instead of rebuilding it. A shared TOPIC word (factory, review,
+promote) never trips a collision; only an identifier/artifact/path does. Run it
+before a task is claimed/started, before any code is written.
+
+readback only makes the collision AVAILABLE; whether you obey it is your call
+(the structural "agent must obey" half is a separate, planned piece).
+
+Matching routes through the same FTS5 path as 'pebbl search' (porter stemming +
+synonym expansion + bm25), so a paraphrase or rename still has a chance to hit.
+Collision-bearing results sort above related-only ones; importance/usage order
+them within the collision set. Read-only — never writes to the store.
+
+Flags:
+  --json               emit the result array as JSON:
+                       [{eid, matched_on, score, collision, verdict_hint}]
+  --top <N>            keep only the top N results
+  --factory-guide      print the static factory-integration manifest
+                       (trigger-conditions + BUILT|PLANNED edges); --json for JSON
+
+Examples:
+  pebbl readback ./prompts/active/some-task.md
+  cat task-spec.md | pebbl readback -
+  pebbl readback --factory-guide --json
+`,
+
   context: `pebbl context — recent entries with rationale warnings & git context
 
 Flags:
@@ -287,6 +317,7 @@ Commands:
   init        set up .pebbl/ in current project
   log         record a decision or note
   search      semantic + keyword search
+  readback    surface colliding prior work for an incoming task spec
   context     recent entries with git context
   handoff     create a session handoff
   narrative   view or set project narrative
