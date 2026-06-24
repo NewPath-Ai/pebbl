@@ -159,6 +159,37 @@ function makeExpireEvent(pebblDir, { ts, target, actor }) {
   };
 }
 
+// Liveness event makers (Primitive 2). Both ride the SAME makeEnvelope head as
+// every maker above (eid/ts/emitted_at/actor/v) — additive, never touching an
+// existing type. The fold (src/fold.js) builds a `liveness` projection from
+// these; the field names here are exactly what its reducer consumes, so they
+// must not drift:
+//   - liveness-register: declares a cadence contract. `name` is the job key;
+//     `every`/`grace` are duration STRINGS on the wire (e.g. '24h', '1h') — the
+//     fold parses them, keeping the event human-readable and the math in one
+//     place. A registered job that never beats is OVERDUE from its register ts.
+//   - heartbeat: a LIVENESS signal, NOT a correctness signal — it asserts a run
+//     reached the (end) beat at `ts`. `name` is the job it beats for; `proof`
+//     is an optional evidence token (row count / output hash / artifact path)
+//     so "beat but no real output" stays inspectable. Correctness stays the job
+//     of a separate artifact/freshness check.
+function makeLivenessRegisterEvent(pebblDir, { ts, name, every, grace, actor }) {
+  return {
+    ...makeEnvelope(pebblDir, 'liveness-register', { ts, actor }),
+    name: name || '',
+    every: every == null ? '' : String(every),
+    grace: grace == null ? '' : String(grace),
+  };
+}
+
+function makeHeartbeatEvent(pebblDir, { ts, name, proof, actor }) {
+  return {
+    ...makeEnvelope(pebblDir, 'heartbeat', { ts, actor }),
+    name: name || '',
+    proof: proof == null ? '' : String(proof),
+  };
+}
+
 // Enforce the trailing-newline invariant and repair a torn final line.
 // If the file exists and its last byte is NOT '\n', a previous write (or a
 // union merge) left a partial line; we append a '\n' to close it off BEFORE
@@ -349,6 +380,8 @@ module.exports = {
   makeSupersedeEvent,
   makeResolveEvent,
   makeExpireEvent,
+  makeLivenessRegisterEvent,
+  makeHeartbeatEvent,
   repairTrailingNewline,
   appendEvent,
   appendEventBatch,
