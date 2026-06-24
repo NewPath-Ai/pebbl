@@ -196,6 +196,62 @@ Examples:
   pebbl readback --factory-guide --json
 `,
 
+  liveness: `pebbl liveness — detect the ABSENCE of an expected event (silent-fail detection)
+
+Deterministic, NO-LLM. The factory's worst failures are SILENT: a scheduled job
+that just doesn't run leaves no error to catch. You can't watch for an absence,
+so flip it to "when did this last succeed?" — declare a cadence, beat a heartbeat
+on verified success, and 'check' flags what is OVERDUE.
+
+  pebbl liveness register <name> --every <dur> [--grace <dur>]
+       declare a cadence contract for a job. <dur> is a duration: 24h, 90m, 2d,
+       45s, 1w (a bare number is seconds). A registered job that never beats is
+       OVERDUE from the moment it was registered.
+
+  pebbl liveness check [--json]
+       walk the registry and flag OVERDUE jobs (now - last_beat > every + grace).
+
+SELF-PROVING: 'check' beats its OWN liveness-check heartbeat and asserts its
+freshness first, and the registry carries a PLANTED always-overdue sentinel that
+every healthy check MUST report as OVERDUE. A check that reports ZERO overdue is
+itself broken (blind, not green) — it exits NON-ZERO and prints LOUD. 'check'
+prints the registry count it walked + the sentinel's status.
+
+A heartbeat is a LIVENESS signal, not a CORRECTNESS signal — it asserts a run
+reached the end beat; whether the output was right is a separate freshness check.
+
+Flags:
+  --json               machine-readable output (register/check)
+  --factory-guide      print the static factory-integration manifest
+                       (trigger-conditions + BUILT|PLANNED edges); --json for JSON
+
+Examples:
+  pebbl liveness register triage --every 24h --grace 1h
+  pebbl liveness check --json
+  pebbl liveness check --factory-guide --json
+`,
+
+  heartbeat: `pebbl heartbeat <name> [--proof <token>] — beat a liveness signal for a job
+
+Deterministic, NO-LLM. Records that <name> is alive at now. Beat on SUCCESS,
+LAST, AFTER the artifact is written and verified — a heartbeat is a LIVENESS
+signal, not a CORRECTNESS signal (it asserts the run reached the end beat; the
+work being right is a separate artifact/freshness check). The absence of a beat
+is what 'pebbl liveness check' later alarms on.
+
+Flags:
+  --proof <token>      an evidence token (row count / output hash / artifact
+                       path) so a "beat but produced nothing" run is inspectable
+  --json               machine-readable output
+  --factory-guide      print the static factory-integration manifest
+                       (trigger-conditions + BUILT|PLANNED edges); --json for JSON
+
+Examples:
+  pebbl heartbeat triage --proof "wrote state/triage-heartbeat.txt"
+  pebbl heartbeat morning-brief
+  pebbl heartbeat --factory-guide --json
+`,
+
   context: `pebbl context — recent entries with rationale warnings & git context
 
 Flags:
@@ -318,6 +374,8 @@ Commands:
   log         record a decision or note
   search      semantic + keyword search
   readback    surface colliding prior work for an incoming task spec
+  liveness    detect silent fails: register a cadence, check what is OVERDUE
+  heartbeat   beat a liveness signal for a job (on verified success)
   context     recent entries with git context
   handoff     create a session handoff
   narrative   view or set project narrative

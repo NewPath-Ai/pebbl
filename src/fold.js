@@ -57,6 +57,12 @@ function topicsToString(topics) {
 const KNOWN_TYPES = new Set([
   'append', 'correct', 'supersede', 'resolve', 'expire',
   'handoff-open', 'handoff-close', 'narrative-set',
+  // Primitive 2 (liveness). ADDITIVE: these reduce into the `liveness` side
+  // channel ONLY, never into the logs/handoffs/commits/narrative outputs — so a
+  // stream WITHOUT them folds byte-identically to before, and a stream WITH them
+  // leaves every existing projection untouched. A registry of cadence contracts
+  // (`liveness-register`) plus the heartbeats that satisfy them (`heartbeat`).
+  'liveness-register', 'heartbeat',
 ]);
 
 // ── the reducer ──────────────────────────────────────────────────────────────
@@ -121,6 +127,13 @@ function foldFull(events) {
   const handoffs = [];
   const commits = [];
   let narrative = null;
+  // Liveness projection (Primitive 2): name -> { every, grace, registered_at,
+  // last_beat, last_proof }. A side channel like commits/narrative — it does NOT
+  // touch the logs array, so existing projections stay byte-identical. `sorted`
+  // is in (ts, emitted_at, eid) order, so the LAST register wins (re-register
+  // updates the cadence) and the LAST heartbeat sets last_beat deterministically.
+  // A registered job with last_beat=null never beat -> overdue from registered_at.
+  const liveness = new Map();
 
   function pushLogRow(e, overrides) {
     const row = {
@@ -233,6 +246,39 @@ function foldFull(events) {
         };
         break;
       }
+      case 'liveness-register': {
+        // Declare/refresh a cadence contract. Keyed by name; a later register
+        // overwrites the cadence (the LAST one in sorted order wins) but never
+        // clears an already-seen heartbeat — registration and beats are
+        // independent. The first register seeds registered_at (the floor a
+        // never-beat job is measured against). `every`/`grace` stay STRINGS
+        // here (the wire form); the liveness command parses durations.
+        if (!e.name) break;
+        const cur = liveness.get(e.name) || {
+          name: e.name, registered_at: e.ts,
+          last_beat: null, last_proof: null,
+        };
+        cur.every = e.every == null ? '' : String(e.every);
+        cur.grace = e.grace == null ? '' : String(e.grace);
+        cur.registered_at = e.ts;            // sorted order: latest register ts
+        liveness.set(e.name, cur);
+        break;
+      }
+      case 'heartbeat': {
+        // A liveness beat for a job. A beat can arrive for a name that was never
+        // registered (e.g. the job beats before someone registers the cadence);
+        // we still record last_beat so a later register projects a fresh job.
+        // last_beat is the LATEST ts (sorted order makes "latest" deterministic).
+        if (!e.name) break;
+        const cur = liveness.get(e.name) || {
+          name: e.name, every: '', grace: '',
+          registered_at: null, last_beat: null, last_proof: null,
+        };
+        cur.last_beat = e.ts;
+        cur.last_proof = e.proof == null ? '' : String(e.proof);
+        liveness.set(e.name, cur);
+        break;
+      }
       default:
         break;
     }
@@ -286,7 +332,15 @@ function foldFull(events) {
     delete narrative.refsEids;
   }
 
-  return { logs: rows, handoffs, commits, narrative, eidToInt };
+  // Liveness projection -> a name-sorted array (deterministic regardless of
+  // input order, like every other projection). Each entry is a registry row the
+  // `liveness check` command walks. Empty when no liveness events are present,
+  // so existing callers that never read it are unaffected.
+  const livenessRows = [...liveness.values()].sort((a, b) =>
+    (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+  );
+
+  return { logs: rows, handoffs, commits, narrative, liveness: livenessRows, eidToInt };
 }
 
 // Map an event's actor/origin to the legacy `source` column when an explicit
