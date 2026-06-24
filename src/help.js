@@ -252,6 +252,54 @@ Examples:
   pebbl heartbeat --factory-guide --json
 `,
 
+  recurrence: `pebbl recurrence <signature> — the band-aid detector (frequency vs resistance)
+
+Deterministic, NO-LLM. Turns repeated friction into an escalation signal, and
+separates FREQUENCY (a symptom recurs a lot -> encode it) from RESISTANCE (it
+recurred AFTER a fix that actually touched ROOT -> the fix didn't take ->
+escalate higher).
+
+ALTITUDE IS OBSERVED, NOT SELF-REPORTED. The closing agent does NOT grade its
+own fix. Its 'fix_altitude_claimed' is only a CLAIM; pebbl OBSERVES the real
+altitude from the lesson's 'changed_files' via a blast-radius heuristic — a fix
+that touches a shared/definer file (lib/config/bootstrap/schema/single-definer)
+OR lands a test/regression-guard is 'root'; a single leaf file with no test is
+'patch'. RESISTANCE is computed from the OBSERVED altitude, never the claim. A
+claimed-vs-observed DISAGREEMENT ("claimed root, touched only the leaf") is
+itself a flag.
+
+The signature is anchored on the fix SITE (the named artifact + changed_files),
+not the error string (which the act of fixing mutates), so a re-worded
+recurrence still groups. CAVEAT: a LOW resistance count is NOT proof of no
+resistance — a fix that renames/relocates/rewords can reset a string signature;
+'--scan' surfaces drift candidates.
+
+  pebbl recurrence <signature> [--json]
+       {frequency, resistance, last_seen, attempts[{altitude_observed,
+       altitude_claimed}], flag}. flag is one of:
+         none        novel / below threshold and not resistant
+         PATTERN     frequency >= threshold (default 3) — happens a lot
+         RESISTANT   >= 1 recurrence after an OBSERVED-root fix (the fix didn't take)
+         STRUCTURAL  >= 2 such recurrences (stop fixing it as a bug)
+
+  pebbl recurrence --scan [--json]
+       every over-threshold / resistant signature + its flag (the maintenance feed).
+
+encode COMPUTES the flag; the PATTERN->inbox / RESISTANT->Ashley routing is
+PLANNED (factory wiring), not this command's job. Read-only — never writes.
+
+Flags:
+  --json               machine-readable output
+  --threshold <n>      override the PATTERN frequency threshold (default 3)
+  --factory-guide      print the static factory-integration manifest
+                       (trigger-conditions + BUILT|PLANNED edges); --json for JSON
+
+Examples:
+  pebbl recurrence glm-judge-bills-zero --json
+  pebbl recurrence --scan --json
+  pebbl recurrence --factory-guide --json
+`,
+
   context: `pebbl context — recent entries with rationale warnings & git context
 
 Flags:
@@ -376,6 +424,7 @@ Commands:
   readback    surface colliding prior work for an incoming task spec
   liveness    detect silent fails: register a cadence, check what is OVERDUE
   heartbeat   beat a liveness signal for a job (on verified success)
+  recurrence  the band-aid detector: frequency vs resistance, altitude observed
   context     recent entries with git context
   handoff     create a session handoff
   narrative   view or set project narrative

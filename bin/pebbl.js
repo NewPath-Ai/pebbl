@@ -14,6 +14,7 @@ const commands = {
   readback:     () => require('../src/readback')(args),
   liveness:     () => require('../src/liveness').liveness(args),
   heartbeat:    () => require('../src/liveness').heartbeat(args),
+  recurrence:   () => require('../src/encode')(args),
   context:      () => require('../src/context')(args),
   compact:      () => require('../src/compact')(args),
   rebuild:      () => require('../src/rebuild')(args),

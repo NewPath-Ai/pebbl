@@ -81,9 +81,39 @@ function makeEnvelope(pebblDir, type, { ts, actor } = {}) {
   };
 }
 
+// The OPTIONAL lesson fields (Primitive 3, encode). PURELY ADDITIVE: a lesson
+// event tagged at task close carries a `signature` (the drift-stable fix-SITE
+// key the recurrence command groups on), a `fix_altitude_claimed` (the closing
+// agent's own claim — `patch`|`root`|null — NEVER trusted; pebbl OBSERVES the
+// real altitude from `changed_files`), and `changed_files` (the merge-diff file
+// set the altitude heuristic reads). They ride existing `append`/`correct`
+// events. The headline guarantee the additive-fold test pins: an event WITHOUT
+// these fields must serialize byte-for-byte as before — so we attach each key
+// ONLY when the caller supplied a real value (an undefined/absent field is never
+// stamped). `fold.js` mirrors this: it copies a field onto the logs row only
+// when the event carries it, so an old row's JSON is unchanged. DRY: both makers
+// below build their lesson tail through this one helper, so the shape lives once.
+function lessonFields({ signature, fix_altitude_claimed, changed_files } = {}) {
+  const out = {};
+  if (signature != null && String(signature).trim() !== '') {
+    out.signature = String(signature);
+  }
+  if (fix_altitude_claimed === 'patch' || fix_altitude_claimed === 'root') {
+    out.fix_altitude_claimed = fix_altitude_claimed;
+  }
+  if (Array.isArray(changed_files) && changed_files.length > 0) {
+    out.changed_files = changed_files.map((f) => String(f));
+  }
+  return out;
+}
+
 // Build an `append` event envelope. Caller supplies the domain fields; the
-// envelope head (eid/ts/emitted_at/actor/v) comes from makeEnvelope.
-function makeAppendEvent(pebblDir, { ts, category, tier, message, topics, actor }) {
+// envelope head (eid/ts/emitted_at/actor/v) comes from makeEnvelope. The
+// optional lesson tail (signature/fix_altitude_claimed/changed_files) is spread
+// in ONLY when present (see lessonFields) so a non-lesson append is byte-
+// identical to before.
+function makeAppendEvent(pebblDir, fields = {}) {
+  const { ts, category, tier, message, topics, actor } = fields;
   return {
     ...makeEnvelope(pebblDir, 'append', { ts, actor }),
     category: category || 'uncategorized',
@@ -92,6 +122,7 @@ function makeAppendEvent(pebblDir, { ts, category, tier, message, topics, actor 
     topics: Array.isArray(topics)
       ? topics
       : (topics ? String(topics).split(',').map((t) => t.trim()).filter(Boolean) : []),
+    ...lessonFields(fields),
   };
 }
 
@@ -106,7 +137,8 @@ function makeAppendEvent(pebblDir, { ts, category, tier, message, topics, actor 
 // it must not drift. Envelope stays v=ENVELOPE_VERSION: a `correct` line is just
 // a new type the fold already knows; old `append` lines carry no corrects field
 // and fold unchanged (the `append` case never reads it) — backward-compatible.
-function makeCorrectEvent(pebblDir, { ts, category, tier, message, topics, corrects, actor }) {
+function makeCorrectEvent(pebblDir, fields = {}) {
+  const { ts, category, tier, message, topics, corrects, actor } = fields;
   return {
     ...makeEnvelope(pebblDir, 'correct', { ts, actor }),
     category: category || 'uncategorized',
@@ -116,6 +148,9 @@ function makeCorrectEvent(pebblDir, { ts, category, tier, message, topics, corre
       ? topics
       : (topics ? String(topics).split(',').map((t) => t.trim()).filter(Boolean) : []),
     corrects: corrects || null,
+    // A re-fix recorded as a `correct` (e.g. the GLM-judge saga's later attempt)
+    // carries the SAME optional lesson tail as an append — additive, present-only.
+    ...lessonFields(fields),
   };
 }
 
