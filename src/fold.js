@@ -154,6 +154,22 @@ function foldFull(events) {
       __order: rows.length,
       ...overrides,
     };
+    // Optional lesson tail (Primitive 3, encode). ADDITIVE + present-only: a key
+    // is copied onto the row ONLY when the event carries it, so an event without
+    // these fields produces a byte-identical row (the additive-fold guarantee the
+    // encode test pins). `recurrence` reads these off the folded rows to group by
+    // fix-SITE signature and to OBSERVE altitude from changed_files (never from
+    // the agent's fix_altitude_claimed). events.js only ever stamps these on an
+    // append/correct when present, so the guard here is the symmetric read side.
+    if (typeof e.signature === 'string' && e.signature !== '') {
+      row.signature = e.signature;
+    }
+    if (e.fix_altitude_claimed === 'patch' || e.fix_altitude_claimed === 'root') {
+      row.fix_altitude_claimed = e.fix_altitude_claimed;
+    }
+    if (Array.isArray(e.changed_files) && e.changed_files.length > 0) {
+      row.changed_files = e.changed_files.slice();
+    }
     rows.push(row);
     rowByEid.set(e.eid, row);
     return row;
