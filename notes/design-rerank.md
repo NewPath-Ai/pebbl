@@ -1,5 +1,7 @@
 # Design: re-rank retrieval
 
+> **Historical record.** QMD (the `@tobilu/qmd` semantic search index) was removed from pebbl in M2. SQLite FTS5/BM25 is now the only search engine. This note predates that change and is kept as a design/decision record; its QMD references describe how pebbl worked at the time, not current behavior.
+
 *Idea 4 of 4 in the memory-harness series. Status: design, not built. May 28, 2026.*
 
 Rank by recency + importance + usage + relevance, not recency alone. The layer [context pack](./design-context-pack.md) stands on.

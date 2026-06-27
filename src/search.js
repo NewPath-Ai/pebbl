@@ -139,7 +139,7 @@ function formatResult(r) {
 // mirrors exist so search output is unchanged until then.
 function searchMirrors(pebblDir, query, cat, topic) {
   // Same AND-of-terms recall fix as the SQLite fallback: mirror search is also
-  // a qmd-less substring scan, so a multi-word query must match on all terms
+  // a plain substring scan, so a multi-word query must match on all terms
   // rather than the exact adjacent phrase.
   const terms = queryTerms(query);
   const topicMatch = topics => !topic ||
@@ -168,9 +168,9 @@ function searchMirrors(pebblDir, query, cat, topic) {
   return results.slice(0, 10);
 }
 
-// qmd indexes the whole .pebbl dir, so once mirrors exist it returns mirror
-// blocks too — without attribution. Drop local results that duplicate a
-// mirror match and keep the attributed version. No mirrors → no-op.
+// If local search ever surfaces an entry that also came back as a mirror match
+// (the same memory synced from another machine), it arrives without attribution.
+// Drop the local copy and keep the attributed mirror version. No mirrors → no-op.
 function mergeMirror(results, mirrorResults) {
   if (mirrorResults.length === 0) return results;
   const mirrorKeys = new Set(mirrorResults.map(r => normalize(r.message)));
@@ -248,11 +248,10 @@ function searchHandoffsSqlite(db, query, topic) {
 
 function searchSqlite(pebblDir, query, cat, topic, mirrorResults, sourceResults) {
   // Wire 2 — reads-from-fold: events-mode reads the folded view.sqlite (so a
-  // pulled events.jsonl is searchable), legacy reads db.sqlite unchanged. The
-  // SQLite fallback is the only search path that touches a db handle; the qmd
-  // path searches the markdown the fold ALSO regenerates, so it is already
-  // fold-aware. searchHandoffsSqlite reuses this same handle (handoffs table is
-  // in the view too), so both log and handoff hits come from the fold.
+  // pulled events.jsonl is searchable), legacy reads db.sqlite unchanged. This
+  // is the only search path that touches a db handle. searchHandoffsSqlite
+  // reuses this same handle (handoffs table is in the view too), so both log
+  // and handoff hits come from the fold.
   const db = openReadDb(pebblDir);
 
   // AND-of-terms: each whitespace-delimited term becomes its own LIKE clause,
@@ -428,8 +427,8 @@ module.exports = function search(args) {
   // graceful FALLBACK = the LIKE substring scan when FTS5 is unavailable. The
   // capability probe opens a read handle and asks fts5Available(db): FTS5 must be
   // compiled in AND either the index already exists (a folded view.sqlite) or we
-  // can build it on this handle (writable legacy db.sqlite). This replaces the old
-  // probe-the-external-tool branch — qmd is gone from the search READ path.
+  // can build it on this handle (writable legacy db.sqlite). FTS5 is the only
+  // search backend.
   // Any throw from the FTS path degrades to the identical-shape LIKE search, so a
   // store that somehow can't be FTS-indexed still returns results.
   let useFts5 = false;

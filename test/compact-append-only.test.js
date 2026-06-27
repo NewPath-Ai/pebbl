@@ -18,21 +18,18 @@ const BIN = path.resolve(__dirname, '../bin/pebbl.js');
 const { readEvents } = require('../src/events');
 const { fold } = require('../src/fold');
 
-// Run pebbl with qmd OFF the path. qmd update/embed is the synchronous slow
-// path (seconds per write — P4 moves it off the hot path, out of P3 scope) and
-// it has nothing to do with the append-only invariant under test. We launch the
-// child with an absolute node and a minimal PATH that still has git (/usr/bin)
-// but NOT the nvm bin where qmd lives, so `which qmd` fails and qmdUpdate
-// no-ops. Keeps these tests fast and hermetic.
+// Launch the child with an absolute node and a minimal PATH that still has git
+// (/usr/bin) but nothing from the user's shell, so the test runs in a fixed,
+// hermetic environment regardless of what's installed on the machine.
 const NODE = process.execPath;
-const QMD_OFF_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+const HERMETIC_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 
 // Spin up a throwaway git repo with a populated, REAL (categorized, topic'd)
 // pebbl store so buildGroups finds a rollup group. Flags use the names pebbl
 // log actually knows: --cat / --tier / --topic (NOT --category/--topics).
 function populatedStore(n = 12) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-append-only-'));
-  const env = { ...process.env, PATH: QMD_OFF_PATH };
+  const env = { ...process.env, PATH: HERMETIC_PATH };
   const run = (args) => execFileSync(NODE, [BIN, ...args], { cwd: dir, env, stdio: ['ignore', 'pipe', 'ignore'] });
   const git = (args) => execFileSync('git', args, { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] });
   git(['init', '-q']);

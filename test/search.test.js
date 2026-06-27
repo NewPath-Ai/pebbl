@@ -68,7 +68,7 @@ describe('search - formatResult', () => {
   });
 });
 
-describe('search - searchHandoffsSqlite (no-qmd fallback)', () => {
+describe('search - searchHandoffsSqlite (SQLite LIKE path)', () => {
   function dbWith(rows) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-search-'));
     const db = new Database(path.join(dir, 'db.sqlite'));

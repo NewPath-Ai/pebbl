@@ -43,7 +43,7 @@ searchable, well-organized — but the underlying storage is just markdown files
 
 Core requirements (from the user, non-negotiable):
 - Notes stored as markdown files (one file per note)
-- QMD (@tobilu/qmd) for semantic search and indexing over the notes
+- A full-text search index over the notes (your choice of approach)
 - A markdown viewer/renderer for reading notes in the terminal (render headings,
   bold, lists, code blocks — not just cat the raw file)
 - Commands: add, list, search, show (with rendered output), edit
@@ -69,13 +69,13 @@ leave implementation to them:
 | "How should I store notes?" | "Markdown files, one per note. That's a hard requirement." |
 | "Should I use a database or files?" | "Markdown files ARE the database. Like Bear — files on disk but it feels like an app." |
 | "What fields/metadata should a note have?" | "Title, tags, created date at minimum. I want to be able to organize and filter." |
-| "How should search work?" | "Use QMD — that's the whole point. Semantic search over the markdown files." |
+| "How should search work?" | "Full-text search over the markdown files — that's the whole point. Search by content." |
 | "What markdown rendering library?" | "Your call, pick something that looks good in the terminal. I want headings, bold, lists, code blocks to render properly." |
 | "How should notes be named on disk?" | "You decide — whatever makes the system feel solid and avoids conflicts." |
 | "Should I use library X for Y?" | "Your call as the engineer, just keep dependencies minimal and document why." |
 | Any other implementation question | "You're the engineer, pick what makes sense and log why to pebbl" |
 
-The goal: product requirements are clear (markdown storage, QMD search, terminal viewer),
+The goal: product requirements are clear (markdown storage, full-text search, terminal viewer),
 but the worker makes all engineering decisions and logs them to pebbl.
 
 After the subagent finishes, run Phase 1 scoring.
@@ -260,7 +260,7 @@ pebbl log "chose SQLite over JSON files for metadata"
 pebbl log "notes module depends on search module for indexing"
 pebbl log "always use ISO 8601 dates in frontmatter"
 pebbl log "schema uses title, tags, created, body columns"
-pebbl log "qmd search endpoint returns top 5 matches"
+pebbl log "search endpoint returns top 5 matches"
 pebbl log "response time target is under 200ms for search"
 pebbl log "random note that matches nothing specific"
 
@@ -271,7 +271,7 @@ sqlite3 .pebbl/db.sqlite "SELECT category, tier, message FROM logs ORDER BY id D
 #   "notes module depends..." → structure / signal
 #   "always use ISO 8601..."  → pattern / signal
 #   "schema uses title..."    → data / detail
-#   "qmd search endpoint..."  → integration / detail
+#   "search endpoint..."      → integration / detail
 #   "response time target..." → quality / detail
 #   "random note..."          → uncategorized / detail
 #

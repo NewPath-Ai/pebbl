@@ -1,5 +1,7 @@
 # Design: onboarding & migration (no cold start)
 
+> **Historical record.** QMD (the `@tobilu/qmd` semantic search index) was removed from pebbl in M2. SQLite FTS5/BM25 is now the only search engine. This note predates that change and is kept as a design/decision record; its QMD references describe how pebbl worked at the time, not current behavior.
+
 *Bootstrap useful memory when pebbl is added to a repo that already has history, and carry an older pebbl forward safely. Status: design spike, not built. June 15, 2026.*
 
 Raise the capture **floor**, don't add retrieval. A fresh `pebbl init` is empty ([init.js:56-57](../src/init.js) write empty `manual-logs.md`/`commit-log.md`), and an empty store gives an agent no reason to trust or use it — the cold-start face of the capture/coverage problem the adversarial analysis put ahead of retrieval. The fix is not a cleverer search; it's having something worth searching on day one.

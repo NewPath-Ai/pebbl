@@ -9,8 +9,8 @@ const FEEDBACK_FILE = 'feedback.jsonl';
 const { version } = require('../package.json');
 
 // Resolve where feedback lands: an existing .pebbl/ if there is one, else
-// create .pebbl/ in the current directory. Deliberately avoids the SQLite db
-// and qmd — feedback often gets dropped because those layers are misbehaving.
+// create .pebbl/ in the current directory. Deliberately avoids the SQLite db —
+// feedback often gets dropped because that layer is misbehaving.
 function resolvePebblDir() {
   const existing = findPebblDir();
   if (existing) return existing;

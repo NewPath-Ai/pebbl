@@ -1,5 +1,7 @@
 # Making pebbl work better — audit 2026-06-17
 
+> **Historical record.** Several findings below concern `src/qmd.js` and QMD-based search. QMD (the `@tobilu/qmd` semantic search index) was removed from pebbl in M2; SQLite FTS5/BM25 is now the only search engine. Those QMD findings are obsolete. Kept as an audit record.
+
 Code-grounded audit of the pebbl CLI (`~/factory/repos/pebbl`, v0.3.0). Method: 6 parallel audit dimensions read the real source, every finding was adversarially re-checked against the code by a separate skeptic, then synthesized. **42 findings raised, 42 confirmed, 0 refuted.** Generated from workflow wf_532df57f-4cf.
 
 ## The one thing to fix today
