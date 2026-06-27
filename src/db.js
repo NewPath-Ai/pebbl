@@ -287,8 +287,8 @@ module.exports.validAsOf = validAsOf;
 //     narrative's). If one is ever added it should call recordAccess (it is the
 //     archetypal intentional lookup).
 //   - search.js is a FOLLOW-UP, intentionally untouched: its SQLite path does not
-//     select id, and the qmd path carries no ids, so there is nothing to increment
-//     without a separate change. Wiring search-result increments is the next slice.
+//     select id, so there is nothing to increment without a separate change.
+//     Wiring search-result increments is the next slice.
 // It must NOT fire on internal/programmatic reads (drift checks, topic-index
 // COUNT aggregates, narrative refs, compaction previews).
 //

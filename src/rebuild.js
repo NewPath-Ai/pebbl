@@ -15,8 +15,6 @@
 //   3. Stamp folded_through in view.sqlite's meta table so the next read takes
 //      the fast 'fresh' path (src/staleness.js writeWatermark / currentState).
 //   4. Clear the .rebuild-needed sentinel the git hooks touch.
-//   5. Kick the DEFERRED (background) qmd reindex — never inline, so rebuild
-//      stays fast and qmd stays off the hot path (the whole point of P4).
 
 const fs = require('fs');
 const path = require('path');

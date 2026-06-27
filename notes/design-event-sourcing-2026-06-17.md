@@ -1,5 +1,7 @@
 # Design: text-as-truth (event-sourcing) for shared-write memory
 
+> **Historical record.** QMD (the `@tobilu/qmd` semantic search index) was removed from pebbl in M2. SQLite FTS5/BM25 is now the only search engine. This note predates that change and is kept as a design/decision record; its QMD references describe how pebbl worked at the time, not current behavior.
+
 *Invert Pebbl's canonical store from binary `db.sqlite` to a committed append-only `events.jsonl`, so memory lives in git and multiple contributors add learnings that merge. SQLite + qmd demoted to rebuildable local indexes. Status: designed + adversarially verified, P0 tracer queued to the factory. June 17, 2026.*
 
 Decision: **build tracer first.** Effort: ~18-26 engineering days across P0-P6. Adversarial verdict: the inversion is genuinely required (the cheap "harden the publish model" path provably cannot deliver cross-actor correction or concurrent compaction) and survived refutation; four naive sub-claims were killed and their fixes are baked in below.

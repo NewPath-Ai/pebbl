@@ -64,12 +64,12 @@ function classifyStore(pebblDir) {
 // "db.sqlite-under-*.pebbl*" convention; we walk for the `.pebbl` dir itself
 // (the store root) and classify by its contents. Bounded + safe:
 //   - skip heavy/irrelevant dirs (node_modules, .git, the mirror/ subtree which
-//     holds OTHER machines' read-only synced stores, archive/, qmd/),
+//     holds OTHER machines' read-only synced stores, archive/),
 //   - depth-capped so a scan from $HOME can't wander forever,
 //   - swallow EACCES/ENOENT on individual dirs (a store we can't read is
 //     skipped, never crashes the inventory),
 //   - PURELY readdir/stat — opens nothing, writes nothing, deletes nothing.
-const SKIP_DIRS = new Set(['node_modules', '.git', 'mirror', 'archive', 'qmd']);
+const SKIP_DIRS = new Set(['node_modules', '.git', 'mirror', 'archive']);
 const DEFAULT_MAX_DEPTH = 8;
 
 function findStores(root, maxDepth = DEFAULT_MAX_DEPTH) {

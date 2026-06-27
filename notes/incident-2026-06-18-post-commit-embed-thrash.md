@@ -1,5 +1,7 @@
 # Incident: post-commit hook embed thrash (2026-06-18)
 
+> **Historical record.** QMD (the `@tobilu/qmd` semantic search index) was removed from pebbl in M2. SQLite FTS5/BM25 is now the only search engine, so the `qmd update` embed thrash described here can no longer occur. Kept as an incident record.
+
 ## What happened
 A factory agent running the pebbl test suite in the `pebbl--rerank-live-wire`
 worktree drove the Mac to **load average ~154 on 10 cores** (15x oversubscription).

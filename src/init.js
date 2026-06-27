@@ -347,7 +347,7 @@ function init(argv) {
     //     events.jsonl lines, and audit-history scans committed history; a fresh
     //     shared store commits only events.jsonl, so the source of truth is the
     //     one scanned thing.
-    //   - qmd / lock / sentinels : machine-local index + concurrency artifacts.
+    //   - lock / sentinels : concurrency artifacts.
     // Order: the negation `!.pebbl/events.jsonl` re-includes it even if a
     // pre-existing blanket `.pebbl/` line is already in the file (LOCAL->shared
     // upgrade), so it goes LAST.
@@ -360,9 +360,7 @@ function init(argv) {
     ensureIgnoreLine('.pebbl/narrative.md', '.pebbl/narrative.md (derived from the fold)');
     ensureIgnoreLine('.pebbl/events-view.md', '.pebbl/events-view.md (derived tracer)');
     ensureIgnoreLine('.pebbl/*.lock', '.pebbl/*.lock (local locks)');
-    ensureIgnoreLine('.pebbl/.qmd-update.lock', '.pebbl/.qmd-update.lock (local lock)');
     ensureIgnoreLine('.pebbl/.rebuild-needed', '.pebbl/.rebuild-needed (local sentinel)');
-    ensureIgnoreLine('.pebbl/qmd/', '.pebbl/qmd/ (local semantic index)');
     ensureIgnoreLine('!.pebbl/events.jsonl', '.pebbl/events.jsonl (SHARED — committed)');
     // Positive completeness marker: a fresh shared store is 'events' via
     // storeMode step 3 even before its first `pebbl log`. NOT gitignored (shared

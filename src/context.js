@@ -381,7 +381,7 @@ function contextDefault(pebblDir, db) {
   // and the non-fleeting tier set are kept; rerank only reorders the same
   // candidate set. Section keeps the --- RECENT --- label (it is still the
   // "what should I look at" section) even though it is no longer strictly
-  // newest-first. relevance is flat/0 here (no qmd in context), as expected.
+  // newest-first. relevance is flat/0 here (context does no relevance ranking), as expected.
   const recentCandidates = db.prepare(`
     SELECT id, timestamp, source, category, tier, message, topics,
            importance, access_count, last_accessed
