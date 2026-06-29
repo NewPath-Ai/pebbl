@@ -41,7 +41,11 @@ const { renderFactoryGuide } = require('./factory-guide'); // ONE printer, share
 // fix: it keeps `quality` (the strongest real precedents carry it) and drops
 // `quality-with-artifact`, which was never a real category.
 const REASONING_CATEGORIES = new Set([
-  'decision', 'correction', 'pattern', 'integration', 'structure', 'quality',
+  'decision', 'steering', 'pattern', 'integration', 'structure', 'quality',
+  // `correction` is the deprecated alias of `steering`; old already-stored rows
+  // still carry it, so keep it here to fold them into the reasoning subset on
+  // READ (the rename is forward-only — we never rewrite the log).
+  'correction',
 ]);
 const DURABLE_TIERS = new Set(['foundation', 'component', 'detail']);
 

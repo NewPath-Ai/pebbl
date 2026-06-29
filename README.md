@@ -27,11 +27,12 @@ Every note in pebbl falls into one of 7 categories:
 | **data** | Schema: users table has (id, email, created_at, tags); search returns top 5 matches |
 | **integration** | OAuth provider: Google, sign-in flow uses PKCE, tokens cached in localStorage |
 | **quality** | Search latency target: < 200ms; test coverage: > 80% |
-| **correction** | Branch parked after failing review 3x; hotfix for the regression in search ranking |
+| **steering** | Branch parked after failing review 3x; hotfix for the regression in search ranking; recurring friction worth encoding |
 
-`correction` records that something went wrong and what was learned; the
-`--corrects <id>` flag additionally links the entry that supersedes a prior
-one. Use either or both.
+`steering` records a course-correction or friction: what went wrong, what was
+learned, what to do differently. The `--corrects <id>` flag additionally links
+the entry that supersedes a prior one. Use either or both. (`correction` is a
+deprecated alias for `steering`, still accepted on `--cat`.)
 
 ### Entry tiers
 
@@ -186,7 +187,7 @@ pebbl context               # Dump recent context for copy/paste
 ```
 
 Flag cheat sheet:
-- `--cat <decision|structure|pattern|data|integration|quality|correction>` — what kind of entry
+- `--cat <decision|structure|pattern|data|integration|quality|steering>` — what kind of entry (`correction` is a deprecated alias for `steering`)
 - `--topic <name>` — one or more topics (comma-separated: `--topic auth,api`)
 - `--tier <foundation|component|detail|fleeting>` — how long to keep it (default: detail)
 - `--scope foundation` — mark as project-level decision (auto-sets tier to foundation)

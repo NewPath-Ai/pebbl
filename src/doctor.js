@@ -3,7 +3,7 @@ const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb, notCorrected } = require('./db');
-const { ensureProjectFiles, loadConfig } = require('./rubric');
+const { ensureProjectFiles, loadConfig, loadRubric, classifyEntryMulti } = require('./rubric');
 // REUSE check.js's pure detector for the missing-artifact dimension — do NOT
 // reimplement its path/symbol regex here (DRY: one definition of "a cited file
 // is gone"). See src/check.js _internal.checkEntries.
@@ -59,6 +59,8 @@ const DEFAULTS = {
   // handoff open past two weeks is probably finished-but-unclosed, not active.
   handoff_open_days: 14,
   handoff_cap: 10,
+  // Non-atomic: top-N multi-topic entries to surface, so the section stays short.
+  nonatomic_cap: 10,
 };
 
 function loadDoctorConfig(pebblDir, { all = false } = {}) {
@@ -71,6 +73,7 @@ function loadDoctorConfig(pebblDir, { all = false } = {}) {
     minTerms: cfg.min_terms ?? DEFAULTS.min_terms,
     handoffOpenDays: cfg.handoff_open_days ?? DEFAULTS.handoff_open_days,
     handoffCap: cfg.handoff_cap ?? DEFAULTS.handoff_cap,
+    nonatomicCap: cfg.nonatomic_cap ?? DEFAULTS.nonatomic_cap,
   };
   if (all) {
     // Widen every knob: more output, a lower bar to flag, a shorter horizon.
@@ -81,6 +84,7 @@ function loadDoctorConfig(pebblDir, { all = false } = {}) {
     // Handoffs: surface every open one (no horizon) and lift the cap.
     out.handoffOpenDays = 0;
     out.handoffCap = out.handoffCap * 10;
+    out.nonatomicCap = out.nonatomicCap * 10;
   }
   return out;
 }
@@ -284,12 +288,52 @@ function detectHandoffHealth(handoffs, { openDays, cap, now } = {}) {
   return out.slice(0, cap);
 }
 
-// ── compose all four (pure) ─────────────────────────────────────────────────
+// ── detector 5: non-atomic entries (multi-topic, report-only) ────────────────
+//
+// An atomic memory is one fact per row. When a single `pebbl log` crams several
+// facts together ("chose X, refactored module Y, and the schema changed"), the
+// rubric still files it under ONE category — picked by rule order — so the other
+// facts hide under a label that doesn't describe them. This detector RE-READS
+// each current entry with the order-independent classifyEntryMulti and flags the
+// rows whose message trips multiple distinct categories. It NEVER splits, edits,
+// or re-files anything: it only surfaces "this looks like several facts in one
+// row" so a human/agent can re-log them one fact at a time.
+//
+// Heuristic — an entry qualifies when it matches:
+//   - >= 3 distinct categories (strong signal on its own), OR
+//   - >= 2 distinct categories AND message length > 300 chars (a long entry
+//     straddling two topics is probably two entries).
+// Reuses classifyEntryMulti (no second scorer — DRY) and the rubric rules the
+// CLI already loaded. `rules` defaults to [] so older callers that omit it (and
+// the pure tests) simply get an empty result.
+function detectNonAtomic(entries, rules, { cap } = {}) {
+  cap = cap ?? DEFAULTS.nonatomic_cap;
+  rules = rules || [];
+
+  const out = [];
+  for (const e of entries) {
+    const m = classifyEntryMulti(rules, e.message);
+    if (!m) continue;
+    const n = m.categories.length;
+    const longMulti = n >= 2 && String(e.message || '').length > 300;
+    if (n >= 3 || longMulti) {
+      out.push({ dimension: 'nonatomic', entry: e, categories: m.categories });
+    }
+  }
+  // Most tangled first (most categories), then longest message. Cap to stay quiet.
+  out.sort((a, b) =>
+    (b.categories.length - a.categories.length) ||
+    (String(b.entry.message || '').length - String(a.entry.message || '').length));
+  return out.slice(0, cap);
+}
+
+// ── compose all five (pure) ─────────────────────────────────────────────────
 //
 // Pure orchestrator over already-loaded current-belief entries: returns the
-// four detector result arrays. Kept side-effect-free so tests drive it without
+// five detector result arrays. Kept side-effect-free so tests drive it without
 // a real store (the check.js _internal pattern). `handoffs` is optional — when
 // absent (older callers / no handoffs table), the handoff section is empty.
+// `rules` is optional too — without it the non-atomic section is empty.
 function diagnose(entries, repoRoot, opts = {}) {
   return {
     contradictions: detectContradictions(entries, {
@@ -307,6 +351,9 @@ function diagnose(entries, repoRoot, opts = {}) {
       openDays: opts.handoffOpenDays,
       cap: opts.handoffCap,
       now: opts.now,
+    }),
+    nonatomic: detectNonAtomic(entries, opts.rules, {
+      cap: opts.nonatomicCap,
     }),
   };
 }
@@ -359,6 +406,14 @@ function toJson(results) {
       suggested: closeHint(h.id),
     });
   }
+  for (const c of results.nonatomic || []) {
+    out.push({
+      dimension: 'nonatomic',
+      ids: [c.entry.id],
+      reason: `matches ${c.categories.length} categories (${c.categories.join(', ')}) — likely several facts in one entry`,
+      suggested: splitHint(c.entry.id),
+    });
+  }
   return out;
 }
 
@@ -370,6 +425,13 @@ function supersedeHint(id) {
 // but-open handoff is to close it (report-only doctor never does this itself).
 function closeHint(id) {
   return `pebbl handoff --close ${id}`;
+}
+
+// Non-atomic entries aren't superseded or closed — they're split. There's no
+// single command to run (the caller decides how many facts to peel off), so the
+// hint is a template re-log, one fact per entry. Report-only doctor never splits.
+function splitHint(id) {
+  return `pebbl log "<one fact>"  # split #${id} into atomic entries (one fact per pebbl log)`;
 }
 
 function truncate(msg) {
@@ -390,6 +452,10 @@ module.exports = function doctor(args) {
   const repoRoot = path.dirname(path.resolve(pebblDir));
   const opts = loadDoctorConfig(pebblDir, { all: !!flags.all });
   opts.deep = !!flags.deep;
+  // Rubric rules for the non-atomic detector. Loaded the same way log/scan do
+  // (ensureProjectFiles above already created/migrated rubric.yml). Empty when a
+  // store has no rubric — the non-atomic section then simply finds nothing.
+  opts.rules = loadRubric(pebblDir);
 
   // openDb already calls staleness.ensureFresh(pebblDir) on the read path (see
   // db.js openDb), so a just-pulled events.jsonl is materialized before we read.
@@ -425,9 +491,9 @@ module.exports = function doctor(args) {
   }
 
   const total = results.contradictions.length + results.staleness.length
-    + results.missing.length + results.handoffs.length;
+    + results.missing.length + results.handoffs.length + results.nonatomic.length;
   if (total === 0) {
-    console.log('pebbl doctor: memory looks consistent — no contradictions, stale beliefs, missing artifacts, or stale/malformed handoffs flagged.');
+    console.log('pebbl doctor: memory looks consistent — no contradictions, stale beliefs, missing artifacts, stale/malformed handoffs, or non-atomic entries flagged.');
     return;
   }
 
@@ -483,6 +549,17 @@ module.exports = function doctor(args) {
       console.log();
     }
   }
+
+  if (results.nonatomic.length) {
+    const n = results.nonatomic.length;
+    console.log(`\nNon-atomic entries — ${n} ${n === 1 ? 'entry looks' : 'entries look'} like several facts crammed into one row:\n`);
+    for (const c of results.nonatomic) {
+      console.log(fmtEntry(c.entry));
+      console.log(`   reason: matches ${c.categories.length} categories (${c.categories.join(', ')}) — probably more than one fact`);
+      console.log(`   if so, consider splitting into atomic entries (one fact per \`pebbl log\`)`);
+      console.log();
+    }
+  }
 };
 
 module.exports._internal = {
@@ -490,6 +567,7 @@ module.exports._internal = {
   detectStaleness,
   detectMissing,
   detectHandoffHealth,
+  detectNonAtomic,
   diagnose,
   toJson,
   contentTerms,

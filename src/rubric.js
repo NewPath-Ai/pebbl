@@ -97,7 +97,83 @@ function classifyEntry(rules, message) {
   return null;
 }
 
-module.exports = { loadRubric, loadConfig, classifyEntry, parseYaml };
+// Fixed, highest-priority-first ordering of categories. This MIRRORS the
+// content-rule order of DEFAULT_RUBRIC (the first appearance of each category,
+// reading top to bottom), so the PRIMARY category classifyEntryMulti picks for a
+// single matching rule is identical to what the order-dependent classifyEntry
+// returns today (the stability invariant). It also means a multi-match entry on
+// the default rubric resolves to the same category first-match would have, since
+// priority == rule order there.
+//
+// Why have it at all: classifyEntry is order-dependent — reorder rubric.yml and
+// the stored category for a multi-topic entry can silently change with rule
+// position. CATEGORY_PRIORITY pins the choice to a category, not a line number,
+// so a future rubric reordering can't quietly re-file existing entries. A small,
+// free stability win (ETC — easier to change the rubric safely later).
+const CATEGORY_PRIORITY = [
+  'uncategorized',
+  'quality',
+  'steering',
+  'decision',
+  'structure',
+  'pattern',
+  'data',
+  'integration',
+];
+
+// Tier durability, most durable first. Only used as a deterministic tie-break
+// when ONE category is produced by more than one matched rule with different
+// tiers (e.g. DEFAULT_RUBRIC has two `decision` rules: component and detail).
+// Picking the most durable tier is order-independent — and on the default rubric
+// it happens to match first-match's tier (decision -> component).
+const TIER_DURABILITY = ['foundation', 'component', 'detail', 'fleeting'];
+
+function categoryRank(cat) {
+  const i = CATEGORY_PRIORITY.indexOf(cat);
+  return i === -1 ? CATEGORY_PRIORITY.length : i; // unknown categories sort last
+}
+
+function tierRank(tier) {
+  const i = TIER_DURABILITY.indexOf(tier);
+  return i === -1 ? TIER_DURABILITY.length : i; // unknown tiers sort last
+}
+
+// Order-INDEPENDENT classifier. Where classifyEntry stops at the first matching
+// rule (order matters), this scans ALL rules and reports every distinct category
+// that matched, with a stable primary pick driven by CATEGORY_PRIORITY rather
+// than rule position. Returns { category, categories, tier } or null when
+// nothing matches (mirrors classifyEntry's null contract).
+//   - categories: distinct matched categories, sorted by CATEGORY_PRIORITY
+//     (alphabetical tie-break for any category outside the priority list).
+//   - category:   the primary = categories[0] = highest-priority match. This is
+//     the single category we'd store; it equals classifyEntry's category for any
+//     single-rule match (the stability invariant).
+//   - tier:       the tier of the matched rule that produced the primary; if
+//     several rules produced it with different tiers, the most durable wins.
+// classifyEntry is intentionally left untouched (its pinned tests depend on
+// first-match); this is a NEW additive scorer used by `pebbl doctor` to spot
+// multi-topic ("non-atomic") entries without changing the write path.
+function classifyEntryMulti(rules, message) {
+  // category -> tier of the most-durable matched rule for that category.
+  const tierByCategory = new Map();
+  for (const rule of rules) {
+    if (rule.pattern && rule.pattern.test(message)) {
+      const prev = tierByCategory.get(rule.category);
+      if (prev === undefined || tierRank(rule.tier) < tierRank(prev)) {
+        tierByCategory.set(rule.category, rule.tier);
+      }
+    }
+  }
+  if (tierByCategory.size === 0) return null;
+
+  const categories = [...tierByCategory.keys()].sort((a, b) =>
+    (categoryRank(a) - categoryRank(b)) || (a < b ? -1 : a > b ? 1 : 0));
+  const category = categories[0];
+  const tier = tierByCategory.get(category);
+  return { category, categories, tier };
+}
+
+module.exports = { loadRubric, loadConfig, classifyEntry, classifyEntryMulti, CATEGORY_PRIORITY, parseYaml };
 
 const DEFAULT_RUBRIC = `# Pebbl classification rubric — edit to tune auto-tagging
 # Rules are evaluated top-to-bottom; first match wins.
@@ -112,8 +188,8 @@ rules:
     category: quality
     tier: detail
 
-  - pattern: "parked|fail(ed)? (review|verdict|adversarial)|verdict: fail|regression|hotfix|incident|crashed|post-?mortem"
-    category: correction
+  - pattern: "parked|friction|fail(ed)? (review|verdict|adversarial)|verdict: fail|regression|hotfix|incident|crashed|post-?mortem"
+    category: steering
     tier: detail
 
   - pattern: "chose|decided|decision|picked|went with|trade-?off|constraint|switched|replaced|changed to|adopted|rejected|dropped|reverted|migrated"
@@ -201,13 +277,36 @@ function migrateRubric(pebblDir) {
     console.error('pebbl: migrated rubric.yml (added ^trace: rule)');
   }
 
+  // v0.5: add "friction" to the steering rule (named "correction" before v0.6)
+  // so "pebbl log this friction" routes there without a manual --cat. This step
+  // matches the pre-rename string `category: correction`, so it MUST run BEFORE
+  // the v0.6 rename below — renaming first would make this guard miss.
+  let frictionMigrated = false;
+  if (content.includes('category: correction') && !/\bfriction\b/.test(content) && content.includes('parked|')) {
+    content = content.replace('parked|', 'parked|friction|');
+    frictionMigrated = true;
+    console.error('pebbl: migrated rubric.yml (added "friction" to steering rule)');
+  }
+
+  // v0.6: rename the category `correction` -> `steering` in an existing rubric.
+  // "steering" reads as course-correction/guidance (broader, more intuitive) and
+  // the rule now also catches "friction". ORDER MATTERS: runs AFTER the v0.5
+  // friction step (whose guard matches the pre-rename string). Idempotent: once
+  // renamed there is no `category: correction` left, so a re-run is a no-op.
+  let correctionRenamed = false;
+  if (content.includes('category: correction')) {
+    content = content.replace(/category:(\s*)correction\b/g, 'category:$1steering');
+    correctionRenamed = true;
+    console.error('pebbl: migrated rubric.yml (renamed category correction -> steering)');
+  }
+
   if (sessionMigrated) {
     console.error('pebbl: migrated rubric.yml (anchored [session] pattern)');
   }
   if (decisionMigrated) {
     console.error('pebbl: migrated rubric.yml (expanded decision keywords)');
   }
-  if (sessionMigrated || decisionMigrated || signalMigrated || traceMigrated) {
+  if (sessionMigrated || decisionMigrated || signalMigrated || traceMigrated || frictionMigrated || correctionRenamed) {
     fs.writeFileSync(rubricPath, content);
   }
 }

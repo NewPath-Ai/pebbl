@@ -7,10 +7,11 @@ const CATEGORIES = `Categories (--cat):
   data         schemas, field meanings, formats, storage layout
   integration  external systems, contracts, auth flows, API shapes
   quality      targets, measurements, SLAs, eval results
-  correction   something went wrong and what was learned: failures, regressions, parked work
+  steering     course-corrections and guidance: failures, regressions, parked work, friction
 
-Corrections pair with --corrects <id>: the category says "this entry records
-a failure"; the flag links it to the entry it supersedes. Use either or both.
+Steering entries pair with --corrects <id>: the category records a course-correction
+or friction; the flag links it to the entry it supersedes. Use either or both.
+(\`correction\` is a deprecated alias for \`steering\`, still accepted on --cat.)
 
 Omitting --cat triggers .pebbl/rubric.yml auto-classification. Prefer explicit --cat.`;
 
@@ -126,7 +127,7 @@ and adds a pebbl block (sentinel-marked) to AGENTS.md if present.
   log: `pebbl log "[message]" — record a decision or note
 
 Flags:
-  --cat <category>     ${'decision|structure|pattern|data|integration|quality|correction'}
+  --cat <category>     ${'decision|structure|pattern|data|integration|quality|steering'}
   --topic <topic>      free-form topic (e.g. "auth,api")
   --tier <tier>        foundation|component|detail|fleeting
   --scope foundation   shortcut: promote to foundation tier
