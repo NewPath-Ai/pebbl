@@ -10,6 +10,7 @@ const {
   detectStaleness,
   detectMissing,
   detectHandoffHealth,
+  detectNonAtomic,
   diagnose,
   toJson,
   contentTerms,
@@ -211,6 +212,73 @@ describe('doctor - detectHandoffHealth', () => {
     assert.equal(out.length, 2);
     assert.ok(out[0].malformed, 'malformed sorts first');
     assert.equal(out[0].handoff.id, 2);
+  });
+});
+
+// ── detector 5: non-atomic entries (multi-topic) ──────────────────────────────
+
+describe('doctor - detectNonAtomic', () => {
+  // A slice of the rubric: an entry that trips >=3 of these is non-atomic.
+  const rules = [
+    { pattern: new RegExp('chose|decided', 'i'), category: 'decision', tier: 'component' },
+    { pattern: new RegExp('module|component|boundary', 'i'), category: 'structure', tier: 'component' },
+    { pattern: new RegExp('schema|model|table', 'i'), category: 'data', tier: 'detail' },
+    { pattern: new RegExp('api|endpoint', 'i'), category: 'integration', tier: 'detail' },
+  ];
+
+  it('flags an entry that matches >= 3 categories, with the matched categories', () => {
+    const entries = [
+      entry({ id: 1, message: 'chose to refactor the auth module and migrate the schema' }),
+    ];
+    const out = detectNonAtomic(entries, rules, {});
+    assert.equal(out.length, 1);
+    assert.equal(out[0].entry.id, 1);
+    assert.deepEqual(out[0].categories, ['decision', 'structure', 'data']);
+  });
+
+  it('does NOT flag an atomic single-topic entry', () => {
+    const out = detectNonAtomic([entry({ id: 1, message: 'chose SQLite over Postgres' })], rules, {});
+    assert.equal(out.length, 0);
+  });
+
+  it('does NOT flag a 2-category entry under 300 chars, but DOES once it exceeds 300', () => {
+    const short = 'chose to refactor the module'; // decision + structure, < 300 chars
+    assert.equal(detectNonAtomic([entry({ id: 1, message: short })], rules, {}).length, 0);
+    const long = short + ' '.repeat(310) + 'end';   // same 2 categories, > 300 chars
+    const out = detectNonAtomic([entry({ id: 2, message: long })], rules, {});
+    assert.equal(out.length, 1);
+    assert.deepEqual(out[0].categories, ['decision', 'structure']);
+  });
+
+  it('returns nothing when no rubric rules are supplied', () => {
+    assert.equal(detectNonAtomic([entry({ id: 1, message: 'chose to refactor the module schema' })], []).length, 0);
+  });
+
+  it('is report-only: never mutates the input entries', () => {
+    const entries = [entry({ id: 1, message: 'chose to refactor the module and change the schema' })];
+    const before = JSON.stringify(entries);
+    detectNonAtomic(entries, rules, {});
+    assert.equal(JSON.stringify(entries), before);
+  });
+
+  it('surfaces in diagnose/toJson with a split hint, and diagnose changes nothing', () => {
+    const repo = tmp();
+    const entries = [
+      entry({ id: 1, message: 'chose to refactor the auth module and migrate the schema' }),
+      entry({ id: 2, message: 'chose SQLite over Postgres' }), // atomic — not flagged
+    ];
+    const snapshot = JSON.stringify(entries);
+    const r = diagnose(entries, repo, { now: '2026-06-20T00:00:00Z', rules });
+    assert.equal(r.nonatomic.length, 1);
+    assert.equal(r.nonatomic[0].entry.id, 1);
+    // report-only: the store/entries are untouched after a full diagnose pass.
+    assert.equal(JSON.stringify(entries), snapshot);
+
+    const hit = toJson(r).find(c => c.dimension === 'nonatomic');
+    assert.ok(hit, 'a nonatomic candidate is emitted');
+    assert.deepEqual(hit.ids, [1]);
+    assert.match(hit.reason, /3 categories/);
+    assert.match(hit.suggested, /split #1/);
   });
 });
 

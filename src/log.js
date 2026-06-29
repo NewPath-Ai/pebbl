@@ -30,8 +30,21 @@ function shouldRouteLocal({ tier, share, visibility }) {
 
 const VALID_CATEGORIES = [
   'decision', 'structure', 'pattern', 'data', 'integration', 'quality',
-  'correction',
+  'steering',
 ];
+
+// Deprecated category aliases: old name -> canonical. `correction` was renamed
+// to `steering` (course-correction/guidance reads broader and more intuitive
+// than "correction", which sounds error-only; the category now also catches
+// "friction" entries). We accept the old name on INPUT and normalize it to the
+// canonical value BEFORE validation/storage, so muscle memory and old scripts
+// keep working. Already-stored rows keep their original "correction" value — the
+// rename is forward-only; read paths treat the two as one (see readback.js).
+const CATEGORY_ALIASES = { correction: 'steering' };
+
+function normalizeCategory(cat) {
+  return cat && CATEGORY_ALIASES[cat] ? CATEGORY_ALIASES[cat] : cat;
+}
 
 const VALID_TIERS = ['foundation', 'component', 'detail', 'fleeting'];
 
@@ -119,6 +132,11 @@ module.exports = function log(args) {
   assertCompleteFlags(parsed);
   assertIntegerFlags(parsed, ['corrects', 'relates', 'history']);
   const { flags, positional } = parsed;
+
+  // Normalize a deprecated category alias (e.g. --cat correction) to its
+  // canonical value (steering) BEFORE validation and storage. Input alias only —
+  // already-stored rows are never rewritten.
+  if (flags.cat) flags.cat = normalizeCategory(flags.cat);
 
   // `pebbl log --history <id>`: read-only view of a decision's supersession
   // chain. Branches before the message-required check below.
@@ -399,6 +417,8 @@ function rebuildEventsView(pebblDir, rows) {
 }
 
 module.exports.VALID_CATEGORIES = VALID_CATEGORIES;
+module.exports.CATEGORY_ALIASES = CATEGORY_ALIASES;
+module.exports.normalizeCategory = normalizeCategory;
 module.exports.VALID_TIERS = VALID_TIERS;
 module.exports.VALID_SOURCES = VALID_SOURCES;
 module.exports.printHistory = printHistory;
