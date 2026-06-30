@@ -3,7 +3,7 @@ const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb, notCorrected } = require('./db');
-const { ensureProjectFiles, loadConfig, loadRubric, atomicityOf } = require('./rubric');
+const { ensureProjectFiles, loadConfig, loadRubric, atomicityOf, classifyEntryMulti } = require('./rubric');
 // REUSE check.js's pure detector for the missing-artifact dimension — do NOT
 // reimplement its path/symbol regex here (DRY: one definition of "a cited file
 // is gone"). See src/check.js _internal.checkEntries.
@@ -357,6 +357,76 @@ function diagnose(entries, repoRoot, opts = {}) {
   };
 }
 
+// ── atomicity SCOREBOARD (quantitative metric, for tracking + A/B) ───────────
+//
+// Where detectNonAtomic LISTS the worst multi-topic offenders (capped, for a
+// human to act on), this computes the QUANTITATIVE rate over ALL current
+// entries — a scriptable number we can track over time and A/B against a
+// "one-fact-per-log" convention. Pure: takes already-loaded entries + the
+// rubric rules, returns the scoreboard object. REUSES atomicityOf and
+// classifyEntryMulti (the ONE shared scorer) — there is NO second definition of
+// "non-atomic" or "how many categories" here (DRY).
+//
+// Definitions (all over the `total` current, notCorrected entries doctor loads):
+//   - total:             number of entries measured.
+//   - nonAtomic:         { count, rate } where count = entries atomicityOf flags
+//                        non-atomic, rate = count/total as a percent (1 decimal).
+//                        This is the headline "multi-topic rate".
+//   - meanCategories:    mean distinct categories matched per entry (1 decimal);
+//                        an entry that matches no rule counts as 0.
+//   - distribution:      how many entries match 0 / 1 / 2 / 3+ distinct
+//                        categories (categories.length from classifyEntryMulti).
+//   - uncategorizedRate: percent (1 decimal) of entries whose classifyEntryMulti
+//                        primary is `uncategorized` OR that match no rule at all
+//                        (categories.length === 0). This is the A/B GUARD: a
+//                        "fix" that lowers the non-atomic rate only by making
+//                        entries match nothing (so they file under no real fact
+//                        category) makes THIS balloon, so the regression shows.
+function atomicityMetrics(entries, rules) {
+  rules = rules || [];
+  const total = entries.length;
+  let nonAtomic = 0;
+  let uncategorized = 0;
+  let categorySum = 0;
+  const distribution = { '0': 0, '1': 0, '2': 0, '3plus': 0 };
+
+  for (const e of entries) {
+    const msg = e.message;
+    const m = classifyEntryMulti(rules, msg);          // null when no rule matched
+    const n = m ? m.categories.length : 0;
+    categorySum += n;
+    distribution[n === 0 ? '0' : n === 1 ? '1' : n === 2 ? '2' : '3plus']++;
+    // "Uncategorized" for the guard = filed under no real fact category: either
+    // the primary is the `uncategorized` bucket (session/heartbeat logs) or the
+    // message tripped no rule at all (m === null).
+    if (!m || m.category === 'uncategorized') uncategorized++;
+    // REUSE the shared predicate — do not re-derive the non-atomic threshold.
+    if (atomicityOf(rules, msg).nonAtomic) nonAtomic++;
+  }
+
+  const pct = (x) => total === 0 ? 0 : Math.round((x / total) * 1000) / 10;
+  const meanCategories = total === 0 ? 0 : Math.round((categorySum / total) * 10) / 10;
+
+  return {
+    total,
+    nonAtomic: { count: nonAtomic, rate: pct(nonAtomic) },
+    meanCategories,
+    distribution,
+    uncategorizedRate: pct(uncategorized),
+  };
+}
+
+// Compact human block for `pebbl doctor --metrics` (no --json). A few labeled
+// lines, not a wall. toFixed(1) so a whole-number rate still reads "46.0".
+function printMetrics(m) {
+  const d = m.distribution;
+  console.log(`\npebbl doctor — atomicity scoreboard (${m.total} current ${m.total === 1 ? 'entry' : 'entries'}):`);
+  console.log(`  non-atomic:       ${m.nonAtomic.count} / ${m.total}  (${m.nonAtomic.rate.toFixed(1)}%)  — multi-fact entries`);
+  console.log(`  mean categories:  ${m.meanCategories.toFixed(1)} per entry`);
+  console.log(`  distribution:     0→${d['0']}  1→${d['1']}  2→${d['2']}  3+→${d['3plus']}  (categories matched per entry)`);
+  console.log(`  uncategorized:    ${m.uncategorizedRate.toFixed(1)}%  — A/B guard (entries filed under no real category)`);
+}
+
 // ── JSON shaping for the future factory caller ──────────────────────────────
 //
 // Flatten the three detector outputs into a single array of uniform candidate
@@ -469,6 +539,21 @@ module.exports = function doctor(args) {
       ORDER BY timestamp DESC`
   ).all();
 
+  // --metrics: SHORT-CIRCUIT the 4-detector report and print ONLY the
+  // quantitative atomicity scoreboard, computed over the SAME current entries
+  // above. Placed before the handoffs query + diagnose so no detector runs (the
+  // hard short-circuit the test asserts). --json emits the machine-readable
+  // scoreboard for scripting the A/B.
+  if (flags.metrics) {
+    const metrics = atomicityMetrics(entries, opts.rules);
+    if (flags.json) {
+      console.log(JSON.stringify(metrics, null, 2));
+    } else {
+      printMetrics(metrics);
+    }
+    return;
+  }
+
   // Open handoffs for the lifecycle/health detector. Read-only SELECT (doctor
   // never mutates the store). Guarded in case an older store has no handoffs
   // table — fall back to an empty list so doctor still runs.
@@ -567,6 +652,7 @@ module.exports._internal = {
   detectMissing,
   detectHandoffHealth,
   detectNonAtomic,
+  atomicityMetrics,
   diagnose,
   toJson,
   contentTerms,
