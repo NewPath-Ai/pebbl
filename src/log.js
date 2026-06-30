@@ -4,7 +4,7 @@ const path = require('path');
 const { parseArgs, assertCompleteFlags, assertIntegerFlags } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb } = require('./db');
-const { loadRubric, classifyEntry, ensureProjectFiles } = require('./rubric');
+const { loadRubric, classifyEntryMulti, atomicityOf, ensureProjectFiles } = require('./rubric');
 const { isThinEntry } = require('./detect-thin');
 const { execFileSync } = require('child_process');
 const { appendLogEvent, appendCorrectLogEvent } = require('./events');
@@ -168,6 +168,10 @@ module.exports = function log(args) {
   ensureProjectFiles(pebblDir);
   const ts = new Date().toISOString();
 
+  // Load the rubric ONCE here: it both classifies this entry (below) and feeds
+  // the atomicity gate (atomicityOf, further down), so we don't read it twice.
+  const rules = loadRubric(pebblDir);
+
   let category = flags.cat || null;
   let tier = flags.tier || null;
 
@@ -189,14 +193,38 @@ module.exports = function log(args) {
     }
     // Always consult rubric for classification. Manual --cat overrides
     // rubric category, but rubric still informs tier when --tier is absent.
-    const rules = loadRubric(pebblDir);
-    const classified = classifyEntry(rules, message);
+    //
+    // Primary swap: store the order-INDEPENDENT primary from classifyEntryMulti
+    // instead of first-match classifyEntry. CATEGORY_PRIORITY mirrors the default
+    // rubric's rule order, so the stored category (and tier) are IDENTICAL on the
+    // shipped rubric; the win is that a future rubric reorder can no longer
+    // silently re-file an entry by line position (ETC — easier to change safely).
+    const classified = classifyEntryMulti(rules, message);
     if (!flags.cat && classified) {
       category = classified.category;
     }
     if (!flags.tier && !flags.scope && classified) {
       tier = classified.tier;
     }
+  }
+
+  // Atomicity gate (rubric.atomicityOf — the ONE shared predicate doctor uses
+  // too). A non-atomic entry crams several facts into one log. This runs AFTER
+  // guardWrite (secrets, above) and AFTER classification, but BEFORE any store
+  // write below, so a --strict refusal leaves the store byte-for-byte unchanged.
+  //   - default (no --strict): LOSSLESS — still store, then emit ONE
+  //     machine-readable advisory to stderr (loom's gate keys on `pebbl-lint:`).
+  //   - --strict: do NOT store; print the advisory + a split hint and exit 1.
+  // Session/fleeting entries are scoped out inside atomicityOf, so loom's
+  // session logging is never refused.
+  const atomicity = atomicityOf(rules, message);
+  const lintMsg = atomicity.nonAtomic
+    ? `pebbl-lint: non-atomic entry (${atomicity.reason}) — prefer one fact per log`
+    : null;
+  if (atomicity.nonAtomic && flags.strict) {
+    console.error(lintMsg);
+    console.error('pebbl: --strict refuses multi-fact entries — split into separate atomic `pebbl log` calls (one fact each).');
+    process.exit(1);
   }
 
   // If --corrects is set, inherit category/tier from the corrected entry
@@ -374,6 +402,11 @@ module.exports = function log(args) {
     // Never let the new additive path break the existing, canonical write.
     console.error(`pebbl: events.jsonl append skipped (${err.message})`);
   }
+
+  // DEFAULT (no --strict) advisory: the entry IS stored (lossless), but we still
+  // surface the non-atomic lint so a harness/agent can choose to re-log it as
+  // atomic entries. One line, machine-readable, on stderr — never blocks.
+  if (lintMsg) console.error(lintMsg);
 
   console.log(mdEntry.out);
 };

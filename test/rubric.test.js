@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { loadRubric, classifyEntry, classifyEntryMulti, CATEGORY_PRIORITY, parseYaml, ensureProjectFiles } = require('../src/rubric');
+const { loadRubric, classifyEntry, classifyEntryMulti, atomicityOf, CATEGORY_PRIORITY, parseYaml, ensureProjectFiles } = require('../src/rubric');
 describe('parseYaml', () => {
   it('parses rules list', () => {
     const yaml = `rules:
@@ -208,6 +208,59 @@ describe('classifyEntryMulti', () => {
 
   it('(f) returns null when nothing matches', () => {
     assert.strictEqual(classifyEntryMulti(rules, 'random note about nothing'), null);
+  });
+});
+
+describe('atomicityOf — the shared non-atomic predicate', () => {
+  // Includes the [session] rule so the session/fleeting scoping can be exercised
+  // directly (a [session] message resolves its primary to uncategorized).
+  const rules = [
+    { pattern: new RegExp('^\\[session\\]', 'i'), category: 'uncategorized', tier: 'fleeting' },
+    { pattern: new RegExp('chose|decided', 'i'), category: 'decision', tier: 'component' },
+    { pattern: new RegExp('module|component|boundary', 'i'), category: 'structure', tier: 'component' },
+    { pattern: new RegExp('schema|model|table', 'i'), category: 'data', tier: 'detail' },
+    { pattern: new RegExp('api|endpoint', 'i'), category: 'integration', tier: 'detail' },
+  ];
+
+  it('an atomic single-topic entry is NOT non-atomic (reason null)', () => {
+    const a = atomicityOf(rules, 'chose SQLite over Postgres');
+    assert.strictEqual(a.nonAtomic, false);
+    assert.strictEqual(a.reason, null);
+    assert.deepStrictEqual(a.categories, ['decision']);
+  });
+
+  it('>= 3 distinct categories is non-atomic, reason names the count + categories', () => {
+    const a = atomicityOf(rules, 'chose to refactor the auth module and change the schema');
+    assert.strictEqual(a.nonAtomic, true);
+    assert.deepStrictEqual(a.categories, ['decision', 'structure', 'data']);
+    assert.match(a.reason, /^3 categories: decision,structure,data$/);
+  });
+
+  it('the >= 2-categories-AND-long branch: short 2-cat is atomic, long 2-cat is not', () => {
+    const short = 'chose to refactor the module'; // decision + structure, < 300 chars
+    assert.strictEqual(atomicityOf(rules, short).nonAtomic, false);
+
+    const long = short + ' '.repeat(310) + 'end'; // same 2 categories, > 300 chars
+    const a = atomicityOf(rules, long);
+    assert.strictEqual(a.nonAtomic, true);
+    assert.deepStrictEqual(a.categories, ['decision', 'structure']);
+    assert.match(a.reason, /^2 categories: decision,structure$/);
+  });
+
+  it('session/fleeting entries are ALWAYS atomic, even when they trip many rules', () => {
+    // This message trips decision + structure + data + integration, but its
+    // primary resolves to uncategorized via the [session] rule → atomic.
+    const fat = '[session] chose to refactor the module, changed the schema, wired the api endpoint';
+    const a = atomicityOf(rules, fat);
+    assert.strictEqual(a.nonAtomic, false, 'a fat session log must never be flagged non-atomic');
+    assert.strictEqual(a.reason, null);
+  });
+
+  it('a message matching no rule is atomic (nothing to split)', () => {
+    const a = atomicityOf(rules, 'random note about nothing in particular');
+    assert.strictEqual(a.nonAtomic, false);
+    assert.strictEqual(a.reason, null);
+    assert.deepStrictEqual(a.categories, []);
   });
 });
 

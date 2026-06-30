@@ -3,7 +3,7 @@ const path = require('path');
 const { parseArgs } = require('./args');
 const { requirePebblDir } = require('./find-pebbl');
 const { openDb, notCorrected } = require('./db');
-const { ensureProjectFiles, loadConfig, loadRubric, classifyEntryMulti } = require('./rubric');
+const { ensureProjectFiles, loadConfig, loadRubric, atomicityOf } = require('./rubric');
 // REUSE check.js's pure detector for the missing-artifact dimension — do NOT
 // reimplement its path/symbol regex here (DRY: one definition of "a cited file
 // is gone"). See src/check.js _internal.checkEntries.
@@ -303,22 +303,21 @@ function detectHandoffHealth(handoffs, { openDays, cap, now } = {}) {
 //   - >= 3 distinct categories (strong signal on its own), OR
 //   - >= 2 distinct categories AND message length > 300 chars (a long entry
 //     straddling two topics is probably two entries).
-// Reuses classifyEntryMulti (no second scorer — DRY) and the rubric rules the
-// CLI already loaded. `rules` defaults to [] so older callers that omit it (and
-// the pure tests) simply get an empty result.
+// The threshold itself lives in rubric.atomicityOf — the ONE shared predicate
+// `pebbl log --strict` also enforces, so detect and enforce can't drift (DRY).
+// atomicityOf additionally scopes OUT session/fleeting/uncategorized entries
+// (they aren't memory facts), which fixes the old false positive on fat session
+// logs. `rules` defaults to [] so older callers that omit it (and the pure
+// tests) simply get an empty result.
 function detectNonAtomic(entries, rules, { cap } = {}) {
   cap = cap ?? DEFAULTS.nonatomic_cap;
   rules = rules || [];
 
   const out = [];
   for (const e of entries) {
-    const m = classifyEntryMulti(rules, e.message);
-    if (!m) continue;
-    const n = m.categories.length;
-    const longMulti = n >= 2 && String(e.message || '').length > 300;
-    if (n >= 3 || longMulti) {
-      out.push({ dimension: 'nonatomic', entry: e, categories: m.categories });
-    }
+    const a = atomicityOf(rules, e.message);
+    if (!a.nonAtomic) continue;
+    out.push({ dimension: 'nonatomic', entry: e, categories: a.categories });
   }
   // Most tangled first (most categories), then longest message. Cap to stay quiet.
   out.sort((a, b) =>

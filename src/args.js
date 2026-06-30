@@ -8,9 +8,10 @@ const KNOWN_FLAGS = new Set([
   'show', 'generate', 'include-archive', 'deep', 'n', 'refresh',
   'as-of', 'history', 'share', 'importance',
   'json', 'all', // doctor: machine-readable output; widen past conservative caps
+  'strict', // log: FAIL (exit 1, store nothing) on a non-atomic multi-fact entry
 ]);
 
-const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'open', 'list-open', 'show', 'generate', 'include-archive', 'deep', 'refresh', 'share', 'json', 'all']);
+const BOOLEAN_FLAGS = new Set(['preview', 'execute', 'latest', 'list', 'close', 'open', 'list-open', 'show', 'generate', 'include-archive', 'deep', 'refresh', 'share', 'json', 'all', 'strict']);
 
 // Flags that may legitimately be given more than once. A repeat ACCUMULATES
 // into an array instead of overwriting — the old behavior silently kept only the

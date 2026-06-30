@@ -173,7 +173,46 @@ function classifyEntryMulti(rules, message) {
   return { category, categories, tier };
 }
 
-module.exports = { loadRubric, loadConfig, classifyEntry, classifyEntryMulti, CATEGORY_PRIORITY, parseYaml };
+// The ONE shared atomicity predicate. An atomic memory is one fact per row; a
+// non-atomic ("multi-topic") entry crams several facts into a single `pebbl log`
+// so the rubric files it under ONE category while the other facts hide. This is
+// the single definition of "non-atomic" that BOTH `pebbl doctor` (report-only)
+// and `pebbl log --strict` (write-time enforcement) key on, so the threshold
+// lives in exactly one place — retune it here and both callers move together
+// (DRY: one definition, no drift between detect and enforce).
+//
+// Returns { categories, nonAtomic, reason }:
+//   - categories: classifyEntryMulti's distinct matched set (priority-sorted).
+//   - nonAtomic:  categories.length >= 3, OR (categories.length >= 2 AND the
+//                 message is long, > 300 chars — a long entry straddling two
+//                 topics is probably two entries).
+//   - reason:     a short machine/human string, e.g. "3 categories: a,b,c", or
+//                 null when atomic.
+//
+// SCOPING — fleeting/uncategorized entries are ALWAYS atomic (nonAtomic:false).
+// Session/heartbeat logs ([session] -> uncategorized/fleeting) are deliberately
+// NOT memory facts (one-fact-per-row doesn't apply to a session summary), so
+// --strict must never refuse them or it would break loom's session logging. This
+// also kills a false positive the detector had on "fat" session logs that trip
+// several content rules. A message that matches no rule is atomic too (nothing
+// to split). Reuses classifyEntryMulti — no second scorer.
+function atomicityOf(rules, message) {
+  const m = classifyEntryMulti(rules, message);
+  if (!m) return { categories: [], nonAtomic: false, reason: null };
+  const categories = m.categories;
+  // Session/fleeting/uncategorized entries are not memory facts — never refuse.
+  // (uncategorized is the highest-priority category, so a [session] entry that
+  // also trips content rules still resolves its primary to uncategorized.)
+  if (m.category === 'uncategorized' || m.tier === 'fleeting') {
+    return { categories, nonAtomic: false, reason: null };
+  }
+  const len = String(message || '').length;
+  const nonAtomic = categories.length >= 3 || (categories.length >= 2 && len > 300);
+  const reason = nonAtomic ? `${categories.length} categories: ${categories.join(',')}` : null;
+  return { categories, nonAtomic, reason };
+}
+
+module.exports = { loadRubric, loadConfig, classifyEntry, classifyEntryMulti, atomicityOf, CATEGORY_PRIORITY, parseYaml };
 
 const DEFAULT_RUBRIC = `# Pebbl classification rubric — edit to tune auto-tagging
 # Rules are evaluated top-to-bottom; first match wins.
