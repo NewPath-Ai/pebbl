@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('child_process');
 const { _internal } = require('../src/doctor');
 const {
   detectContradictions,
@@ -11,6 +12,7 @@ const {
   detectMissing,
   detectHandoffHealth,
   detectNonAtomic,
+  atomicityMetrics,
   diagnose,
   toJson,
   contentTerms,
@@ -335,5 +337,154 @@ describe('doctor - diagnose (composition)', () => {
     assert.ok(hit, 'a contradiction candidate is emitted');
     assert.deepEqual(hit.ids.sort(), [1, 2]);
     assert.match(hit.suggested, /pebbl log ".*" --corrects 1/);
+  });
+});
+
+// ── atomicity scoreboard (the quantitative metric) ────────────────────────────
+
+describe('doctor - atomicityMetrics (pure)', () => {
+  // A rubric slice: a session rule (-> uncategorized/fleeting) plus content
+  // rules, so the fixture exercises every code path (multi-fact, atomic, session
+  // primary=uncategorized, and a match-nothing entry).
+  const rules = [
+    { pattern: new RegExp('^\\[session\\]', 'i'), category: 'uncategorized', tier: 'fleeting' },
+    { pattern: new RegExp('chose|decided', 'i'), category: 'decision', tier: 'component' },
+    { pattern: new RegExp('module|component|boundary', 'i'), category: 'structure', tier: 'component' },
+    { pattern: new RegExp('schema|model|table', 'i'), category: 'data', tier: 'detail' },
+    { pattern: new RegExp('api|endpoint', 'i'), category: 'integration', tier: 'detail' },
+  ];
+
+  // Known mix:
+  //  #1 decision+structure+data  = 3 cats -> NON-ATOMIC, bucket 3+
+  //  #2 decision                 = 1 cat  -> atomic,      bucket 1
+  //  #3 structure                = 1 cat  -> atomic,      bucket 1
+  //  #4 [session] + 4 content    = 5 cats -> scoped out (primary uncategorized), bucket 3+
+  //  #5 no rule matches          = 0 cats -> atomic,      bucket 0, uncategorized
+  const entries = [
+    entry({ id: 1, message: 'chose to refactor the auth module and migrate the schema' }),
+    entry({ id: 2, message: 'chose SQLite over Postgres' }),
+    entry({ id: 3, message: 'refactored the auth module' }),
+    entry({ id: 4, message: '[session] chose to refactor the module and migrate the schema and wire the api' }),
+    entry({ id: 5, message: 'random free-form note with none of the keywords here' }),
+  ];
+
+  it('computes total, non-atomic count+rate, mean, distribution, and uncategorized rate', () => {
+    const m = atomicityMetrics(entries, rules);
+    assert.equal(m.total, 5);
+    // only #1 is non-atomic (#4 is scoped out as a session log): 1/5 = 20%.
+    assert.deepEqual(m.nonAtomic, { count: 1, rate: 20 });
+    // categories per entry: 3 + 1 + 1 + 5 + 0 = 10; 10/5 = 2.0.
+    assert.equal(m.meanCategories, 2);
+    assert.deepEqual(m.distribution, { '0': 1, '1': 2, '2': 0, '3plus': 2 });
+    // #4 (primary uncategorized) + #5 (matched nothing) = 2/5 = 40%.
+    assert.equal(m.uncategorizedRate, 40);
+  });
+
+  it('rates round to one decimal', () => {
+    // 1 of 3 non-atomic = 33.333… -> 33.3.
+    const three = [
+      entry({ id: 1, message: 'chose to refactor the auth module and migrate the schema' }), // 3 cats
+      entry({ id: 2, message: 'chose SQLite over Postgres' }),                                 // 1 cat
+      entry({ id: 3, message: 'refactored the auth module' }),                                 // 1 cat
+    ];
+    assert.equal(atomicityMetrics(three, rules).nonAtomic.rate, 33.3);
+  });
+
+  it('an empty store is all-zeros and never divides by zero', () => {
+    const m = atomicityMetrics([], rules);
+    assert.deepEqual(m, {
+      total: 0,
+      nonAtomic: { count: 0, rate: 0 },
+      meanCategories: 0,
+      distribution: { '0': 0, '1': 0, '2': 0, '3plus': 0 },
+      uncategorizedRate: 0,
+    });
+  });
+
+  it('with no rubric rules every entry has 0 categories and is uncategorized', () => {
+    const m = atomicityMetrics(entries, []);
+    assert.equal(m.total, 5);
+    assert.deepEqual(m.nonAtomic, { count: 0, rate: 0 });
+    assert.equal(m.meanCategories, 0);
+    assert.deepEqual(m.distribution, { '0': 5, '1': 0, '2': 0, '3plus': 0 });
+    assert.equal(m.uncategorizedRate, 100);
+  });
+
+  it('is report-only: never mutates the input entries', () => {
+    const before = JSON.stringify(entries);
+    atomicityMetrics(entries, rules);
+    assert.equal(JSON.stringify(entries), before);
+  });
+});
+
+// ── `pebbl doctor --metrics` end-to-end (drives the real CLI) ─────────────────
+
+describe('pebbl doctor --metrics (CLI)', () => {
+  const BIN = path.resolve(__dirname, '../bin/pebbl.js');
+  const dirs = [];
+  const project = () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pebbl-metrics-'));
+    dirs.push(d);
+    fs.mkdirSync(path.join(d, '.pebbl'));
+    return d;
+  };
+  const run = (dir, args) => spawnSync('node', [BIN, ...args], { cwd: dir, encoding: 'utf8' });
+
+  // Seed a known mix via the REAL log path so the default rubric classifies it:
+  //  - ATOMIC      -> decision (1 cat)
+  //  - NON-ATOMIC  -> decision+structure+data (3 cats, the headline flag)
+  //  - SESSION     -> primary uncategorized, scoped out of non-atomic
+  //  - NO-MATCH    -> 0 categories, uncategorized
+  function seed(dir) {
+    assert.equal(run(dir, ['log', 'chose SQLite over Postgres']).status, 0);
+    assert.equal(run(dir, ['log', 'chose to refactor the auth module and migrate the schema to a new table']).status, 0);
+    assert.equal(run(dir, ['log', '[session] chose to refactor the module and migrate the schema and wire the api']).status, 0);
+    assert.equal(run(dir, ['log', 'just some free-form prose with none of the keywords present']).status, 0);
+  }
+
+  it('--json returns the documented shape with correct numbers', () => {
+    const dir = project();
+    seed(dir);
+    const r = run(dir, ['doctor', '--metrics', '--json']);
+    assert.equal(r.status, 0, r.stderr);
+    const m = JSON.parse(r.stdout);
+    // documented keys present
+    assert.deepEqual(Object.keys(m).sort(),
+      ['distribution', 'meanCategories', 'nonAtomic', 'total', 'uncategorizedRate']);
+    assert.equal(m.total, 4);
+    assert.deepEqual(m.nonAtomic, { count: 1, rate: 25 });       // 1 of 4
+    assert.deepEqual(m.distribution, { '0': 1, '1': 1, '2': 0, '3plus': 2 });
+    // (1 + 3 + 5 + 0) / 4 = 2.25 -> 2.3
+    assert.equal(m.meanCategories, 2.3);
+    // session (primary uncategorized) + no-match = 2 of 4 = 50%
+    assert.equal(m.uncategorizedRate, 50);
+  });
+
+  it('human output is the compact scoreboard and SHORT-CIRCUITS the detector report', () => {
+    const dir = project();
+    seed(dir);
+
+    // Sanity: a plain `doctor` DOES surface the non-atomic section here.
+    const plain = run(dir, ['doctor']);
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.match(plain.stdout, /Non-atomic entries —/);
+
+    const r = run(dir, ['doctor', '--metrics']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /atomicity scoreboard \(4 current entries\)/);
+    assert.match(r.stdout, /non-atomic:\s+1 \/ 4\s+\(25\.0%\)/);
+    assert.match(r.stdout, /uncategorized:\s+50\.0%/);
+    // short-circuit: none of the 4 detector sections nor the summary line print.
+    assert.doesNotMatch(r.stdout, /candidate(s)? to review/);
+    assert.doesNotMatch(r.stdout, /Non-atomic entries —/);
+    assert.doesNotMatch(r.stdout, /Contradictions —/);
+    assert.doesNotMatch(r.stdout, /Handoffs —/);
+  });
+
+  const { after } = require('node:test');
+  after(() => {
+    for (const d of dirs) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
+    }
   });
 });
